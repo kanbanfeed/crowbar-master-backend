@@ -54,7 +54,7 @@ const createCheckoutSession = async (req, res) => {
   try {
     const { email } = req.body;
     console.log('🔄 Creating Stripe session for:', email);
-    const testPriceId = process.env.STRIPE_PRICE_ACCESS_PASS || 'price_1SNsAuQZJXcO4yAMKXAehmNP';
+    const testPriceId = process.env.STRIPE_PRICE_ACCESS_PASS;
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
