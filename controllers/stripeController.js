@@ -1,5 +1,7 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { supabase } = require('../config/supabase');
+
 
 // helper: ensure user row exists
 async function ensureUser(email) {
@@ -54,7 +56,7 @@ const createCheckoutSession = async (req, res) => {
   try {
     const { email } = req.body;
     console.log('🔄 Creating Stripe session for:', email);
-    const testPriceId = process.env.STRIPE_PRICE_ACCESS_PASS;
+    const testPriceId = process.env.STRIPE_PRICE_ACCESS_PASS || 'price_1SNsAuQZJXcO4yAMKXAehmNP';
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],

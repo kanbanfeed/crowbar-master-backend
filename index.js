@@ -17,6 +17,8 @@ app.use(
   })
 );
 
+
+
 // --- Stripe webhook route: MUST use raw body & come before express.json() ---
 const { handleWebhook } = require('./controllers/stripeController');
 app.post(
@@ -27,6 +29,12 @@ app.post(
 
 // JSON parser for all other routes
 app.use(express.json());
+
+const logger = (req, res, next) => {
+  console.warn(`API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  next();
+};
+app.use(logger);
 
 // Routes
 app.use('/api/credits', require('./routes/credits'));

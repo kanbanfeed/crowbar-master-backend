@@ -1,6 +1,6 @@
 const { supabase } = require('../config/supabase');
 
-// helper: ensure user row exists
+// Helper function to ensure user exists
 async function ensureUser(email) {
   const { data, error } = await supabase
     .from('users')
@@ -11,11 +11,9 @@ async function ensureUser(email) {
   return data;
 }
 
-// helper: update user totals
+// Helper function to update user total credits
 async function bumpUserCredits(email, deltaCredits) {
   await ensureUser(email);
-  const { error } = await supabase.rpc('noop'); // placeholder if you don’t have RPC; ignore
-  // direct update:
   const { data: curr, error: selErr } = await supabase
     .from('users')
     .select('total_credits')
@@ -43,7 +41,7 @@ const earnCredits = async (req, res) => {
     const delta = parseInt(amount);
     const eligible_global_race = origin === 'access_pass';
 
-    // 1) insert row-level record (legacy table)
+    // Insert row-level record
     const { error: creditsErr } = await supabase
       .from('credits')
       .insert([{
@@ -53,7 +51,7 @@ const earnCredits = async (req, res) => {
 
     if (creditsErr) return res.status(400).json({ error: creditsErr.message });
 
-    // 2) ledger
+    // Insert into ledger
     const { error: ledgerErr } = await supabase
       .from('credits_ledger')
       .insert([{
@@ -61,7 +59,7 @@ const earnCredits = async (req, res) => {
       }]);
     if (ledgerErr) console.error('ledger insert error:', ledgerErr);
 
-    // 3) update users balance
+    // Update total credits
     const newTotal = await bumpUserCredits(email, delta);
 
     res.json({
@@ -78,7 +76,7 @@ const earnCredits = async (req, res) => {
   }
 };
 
-// Get balance (now from users table)
+// Get balance
 const getBalance = async (req, res) => {
   try {
     const { email } = req.query;
@@ -110,19 +108,19 @@ const spendCredits = async (req, res) => {
     const delta = -Math.abs(parseInt(amount));
     const origin_site = origin || 'spend';
 
-    // 1) record spend in legacy table for continuity
+    // Insert into credits table
     const { error: creditsErr } = await supabase
       .from('credits')
       .insert([{ email, amount: delta, origin_site, legal_accept: false }]);
     if (creditsErr) return res.status(400).json({ error: creditsErr.message });
 
-    // 2) ledger
+    // Insert into ledger
     const { error: ledgerErr } = await supabase
       .from('credits_ledger')
       .insert([{ email, delta, reason: 'api.spend', origin_site }]);
     if (ledgerErr) console.error('ledger insert error:', ledgerErr);
 
-    // 3) update users balance
+    // Update total credits
     const newTotal = await bumpUserCredits(email, delta);
 
     res.json({
