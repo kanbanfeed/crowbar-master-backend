@@ -17,7 +17,12 @@ app.use(
   })
 );
 
-
+// Enhanced logger middleware - MUST come before all routes
+const logger = (req, res, next) => {
+  console.warn(`API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  next();
+};
+app.use(logger); // Move logger here to capture ALL requests
 
 // --- Stripe webhook route: MUST use raw body & come before express.json() ---
 const { handleWebhook } = require('./controllers/stripeController');
@@ -30,15 +35,10 @@ app.post(
 // JSON parser for all other routes
 app.use(express.json());
 
-const logger = (req, res, next) => {
-  console.warn(`API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`);
-  next();
-};
-app.use(logger);
-
 // Routes
 app.use('/api/credits', require('./routes/credits'));
 app.use('/api/stripe', require('./routes/stripe'));
+app.use('/api/gate', require('./routes/gate'));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -52,11 +52,16 @@ app.get('/test', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
 
-app.use('/api/gate', require('./routes/gate'));
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(500).json({ error: 'Something went wrong!' });
+});
+
+// 404 handler - this will catch any undefined routes
+app.use('*', (req, res) => {
+  console.warn(`404 - NOT FOUND: ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`);
+  res.status(404).json({ error: 'Route not found' });
 });
 
 // Start server
