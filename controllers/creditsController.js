@@ -86,7 +86,7 @@ const getBalance = async (req, res) => {
       .from('users')
       .select('total_credits')
       .eq('email', email)
-      .single();
+      .maybeSingle();
 
     const balance = data?.total_credits ?? 0;
     if (error) console.error('getBalance error:', error);
