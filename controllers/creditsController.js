@@ -1,6 +1,5 @@
 const { supabase } = require('../config/supabase');
 
-// Helper function to ensure user exists
 async function ensureUser(email) {
   const { data, error } = await supabase
     .from('users')
@@ -190,7 +189,7 @@ const applyReferralCode = async (req, res) => {
 
     await supabase
       .from('promo_referral_codes')
-      .update({ status: 'used' }) // Mark promo code as used
+      .update({ status: 'used' }) 
       .eq('code', promo_code);
 
     // Insert the promo credit into the credits_ledger

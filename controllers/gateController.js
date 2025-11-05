@@ -1,8 +1,6 @@
-// controllers/gateController.js
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { supabase } = require('../config/supabase');
 
-// ---------- Config ----------
 const PARTNER_MAP = {
   talentkonnect: 'https://www.talentkonnect.com',
   careduel: 'https://www.careduel.com',
@@ -16,7 +14,6 @@ const CREDIT_MAP = {
   ecoworldbuy: 7,
 };
 
-// ---------- Helpers ----------
 async function ensureUser(email) {
   const { data, error } = await supabase
     .from('users')
@@ -112,7 +109,7 @@ async function partnerRewardAlreadyGivenToday(email, origin) {
     .limit(1);
   if (error) {
     console.error('reward check error:', error);
-    return true; // fail-safe: avoid duplicate rewards in case of error
+    return true; 
   }
   return (data || []).length > 0;
 }
@@ -219,13 +216,11 @@ const startGate = async (req, res) => {
     const hasPass = await hasAccessPass(email);
 
     if (hasPass) {
-      // Award partner credits (once/day) and redirect
       await awardPartnerOncePerDay(email, origin);
       const redirect_url = PARTNER_MAP[origin];
       return res.json({ success: true, need_payment: false, redirect_url });
     }
 
-    // If no pass yet, legal_accept must be true to even start checkout
     if (String(legal_accept).toLowerCase() !== 'true') {
       return res.status(400).json({ success: false, error: 'legal_accept is required' });
     }
@@ -270,12 +265,10 @@ const startGate = async (req, res) => {
  * - Awards partner action (once/day)
  * - Returns redirect_url (frontend can navigate)
  */
-// controllers/gateController.js (replace completeGate only)
 const completeGate = async (req, res) => {
   try {
     const { session_id, origin, return_to, email: bodyEmail } = req.body || {};
 
-    // Path A: Normal flow after Stripe checkout
     if (session_id) {
       console.log('[gate.complete] using session_id:', session_id);
       const session = await stripe.checkout.sessions.retrieve(session_id);
@@ -289,7 +282,6 @@ const completeGate = async (req, res) => {
         return res.status(400).json({ success: false, error: 'session_not_paid' });
       }
 
-      // Ensure Access Pass credit/spend recorded once per session
       await awardAccessPassIfNeededFromSession(session);
 
       const email =
@@ -308,7 +300,6 @@ const completeGate = async (req, res) => {
       return res.json({ success: true, redirect_url });
     }
 
-    // Path B: User already has Access Pass (no session_id) — allow completion with email + origin
     if (!session_id && bodyEmail && origin) {
       console.log('[gate.complete] no session_id; checking existing access for', bodyEmail, origin);
       const pass = await hasAccessPass(bodyEmail);
@@ -320,7 +311,6 @@ const completeGate = async (req, res) => {
       return res.json({ success: true, redirect_url });
     }
 
-    // If neither condition matched, the request is incomplete
     return res.status(400).json({
       success: false,
       error: 'missing_params',

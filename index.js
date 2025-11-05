@@ -5,7 +5,6 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS
 app.use(
   cors({
     origin: [
@@ -17,14 +16,14 @@ app.use(
   })
 );
 
-// Enhanced logger middleware - MUST come before all routes
+// Enhanced logger middleware
 const logger = (req, res, next) => {
   console.warn(`API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`);
   next();
 };
-app.use(logger); // Move logger here to capture ALL requests
+app.use(logger); 
 
-// --- Stripe webhook route: MUST use raw body & come before express.json() ---
+// Stripe webhook route
 const { handleWebhook } = require('./controllers/stripeController');
 app.post(
   '/api/stripe/webhook',
@@ -58,7 +57,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// 404 handler - this will catch any undefined routes
+// 404 handler 
 app.use('*', (req, res) => {
   console.warn(`404 - NOT FOUND: ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`);
   res.status(404).json({ error: 'Route not found' });

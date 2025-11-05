@@ -1,5 +1,3 @@
-// routes/credits.js
-
 const express = require('express');
 const router = express.Router();
 const { earnCredits, getBalance, spendCredits, applyReferralCode } = require('../controllers/creditsController');
@@ -14,6 +12,6 @@ router.get('/balance', getBalance);
 router.post('/spend', spendCredits);
 
 // POST /api/credits/apply_referral_code
-router.post('/apply_referral_code', applyReferralCode); // New route for applying promo/referral code
+router.post('/apply_referral_code', applyReferralCode);
 
 module.exports = router;

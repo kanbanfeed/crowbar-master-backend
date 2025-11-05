@@ -36,14 +36,11 @@ async function bumpUserCredits(emailRaw, deltaCredits) {
     .eq('email', email);
   if (updErr) console.error('update user credits error:', updErr);
 
-  console.log('🎯 DEBUG: Credits updated for', email, 'new total:', newTotal);
+  console.log('DEBUG: Credits updated for', email, 'new total:', newTotal);
   return { newTotal, total_spent: curr?.total_spent || 0 };
 }
 
-/**
- * Lifetime spend only. Do NOT toggle full_access here.
- * Auto-upgrade is handled separately via a rolling 30-day rule.
- */
+
 async function bumpUserSpend(emailRaw, deltaUsd) {
   const email = normEmail(emailRaw);
   await ensureUser(email);
@@ -86,7 +83,7 @@ async function autoUpgradeIfEligible(emailRaw) {
       return;
     }
 
-    // 🟢 Backfill timestamp if already full_access but missing auto_upgraded_at
+    //  Backfill timestamp if already full_access but missing auto_upgraded_at
     if (userRow?.full_access && !userRow?.auto_upgraded_at) {
       await supabase
         .from('users')
@@ -95,13 +92,13 @@ async function autoUpgradeIfEligible(emailRaw) {
           updated_at: new Date().toISOString(),
         })
         .eq('email', email);
-      console.log('🛠 Backfilled auto_upgraded_at for', email);
+      console.log('Backfilled auto_upgraded_at for', email);
       return;
     }
 
-    // If already upgraded (and timestamp exists), skip.
+    // If already upgraded (and timestamp exists)
     if (userRow?.full_access && userRow?.auto_upgraded_at) {
-      console.log('⏩ User already fully upgraded:', email);
+      console.log('User already fully upgraded:', email);
       return;
     }
 
@@ -126,13 +123,13 @@ async function autoUpgradeIfEligible(emailRaw) {
       .map(r => Number(r.amount_usd || 0))
       .reduce((a, b) => a + b, 0);
 
-    console.log(`📊 30-day rolling spend for ${email}: $${rollingTotal.toFixed(2)}`);
+    console.log(`30-day rolling spend for ${email}: $${rollingTotal.toFixed(2)}`);
 
     const totalSpent = Number(userRow?.total_spent || 0);
     const effectiveTotal = Math.max(rollingTotal, totalSpent);
 
     if (effectiveTotal < 99) {
-      console.log(`💤 Not eligible for auto-upgrade (${email}) — total $${effectiveTotal.toFixed(2)} < $99`);
+      console.log(`Not eligible for auto-upgrade (${email}) — total $${effectiveTotal.toFixed(2)} < $99`);
       return;
     }
 
@@ -148,7 +145,7 @@ async function autoUpgradeIfEligible(emailRaw) {
 
     // Already bonused → ensure full_access and timestamp
     if (priorBonus && priorBonus.length) {
-      console.log('ℹ️ Already bonused, ensuring full_access and auto_upgraded_at');
+      console.log('ℹAlready bonused, ensuring full_access and auto_upgraded_at');
       await supabase
         .from('users')
         .update({
@@ -183,9 +180,9 @@ async function autoUpgradeIfEligible(emailRaw) {
       })
       .eq('email', email);
 
-    console.log(`🎉 Auto-upgrade completed for ${email}: +${bonus} credits & full_access=true`);
+    console.log(`Auto-upgrade completed for ${email}: +${bonus} credits & full_access=true`);
   } catch (err) {
-    console.error('❌ Auto-upgrade check failed:', err);
+    console.error('Auto-upgrade check failed:', err);
   }
 }
 
@@ -227,7 +224,7 @@ const createCheckoutSession = async (req, res) => {
     if (finalPriceId === CROWBAR_PRICE) inferredType = 'crowbar_master';
     if (finalPriceId === ACCESS_PRICE)  inferredType = 'access_pass';
 
-    console.log('🔄 Creating Stripe session for:', email, 'product_type:', inferredType, 'priceId:', finalPriceId);
+    console.log('Creating Stripe session for:', email, 'product_type:', inferredType, 'priceId:', finalPriceId);
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -239,10 +236,10 @@ const createCheckoutSession = async (req, res) => {
       metadata: { user_email: normEmail(email), product_type: inferredType },
     });
 
-    console.log('✅ Stripe session created:', session.id, 'for', inferredType);
+    console.log('Stripe session created:', session.id, 'for', inferredType);
     res.json({ success: true, sessionId: session.id, url: session.url });
   } catch (error) {
-    console.error('❌ Stripe error:', error);
+    console.error('Stripe error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -251,7 +248,7 @@ const createCheckoutSession = async (req, res) => {
 const getSessionStatus = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    console.log('🔍 Checking session:', sessionId);
+    console.log('Checking session:', sessionId);
 
     const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['payment_intent'] });
 
@@ -268,7 +265,7 @@ const getSessionStatus = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Session check error:', error);
+    console.error('Session check error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -288,7 +285,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       session?.customer_email;
     const email = normEmail(rawEmail);
     if (!email) {
-      console.error('❌ No user email on session:', session?.id);
+      console.error('No user email on session:', session?.id);
       return;
     }
 
@@ -298,11 +295,8 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     const metaProduct = (session?.metadata?.product_type || 'access_pass').toLowerCase();
     const usd = Number.isFinite(amountCents) ? amountCents / 100 : 0;
 
-    console.log(`🔍 Processing payment for ${email} — session=${sessionId}, event=${sourceEventId}`);
+    console.log(`Processing payment for ${email} — session=${sessionId}, event=${sourceEventId}`);
 
-    /* ------------------------------------------------------------------
-       Detect product type correctly (metadata → price → amount)
-    ------------------------------------------------------------------ */
     let isCrowbarByPrice = false;
     try {
       const expanded = await stripe.checkout.sessions.retrieve(sessionId, {
@@ -312,7 +306,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       const crowbarPriceId = process.env.STRIPE_PRICE_CROWBAR_MASTER;
       if (crowbarPriceId && priceIds.includes(crowbarPriceId)) isCrowbarByPrice = true;
     } catch (e) {
-      console.warn('⚠️ Could not expand line_items:', e?.message || e);
+      console.warn('Could not expand line_items:', e?.message || e);
     }
 
     const isCrowbarByAmount = !Number.isNaN(amountCents) && amountCents === 3900 && ['usd', 'gbp'].includes(currency);
@@ -329,14 +323,14 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     const productForCredits = isCrowbar ? 'crowbar_master' : metaProduct;
     const credits = map[productForCredits] ?? 0;
 
-    console.log(`💰 Product=${productForCredits}, credits=${credits}, usd=${usd}`);
+    console.log(` Product=${productForCredits}, credits=${credits}, usd=${usd}`);
 
     /* ------------------------------------------------------------------
        1️⃣ Hard guard – do nothing if credits <= 0
        (do NOT even insert a ledger row)
     ------------------------------------------------------------------ */
     if (!credits || credits <= 0) {
-      console.warn(`⚠️ Skipping transaction for ${email} — invalid/zero credits (${credits})`);
+      console.warn(`Skipping transaction for ${email} — invalid/zero credits (${credits})`);
       return;
     }
 
@@ -349,7 +343,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       .eq('stripe_session_id', sessionId)
       .gte('delta', 1)
       .limit(1);
-    if (priorValidErr) console.error('❌ Ledger valid-check error:', priorValidErr);
+    if (priorValidErr) console.error('Ledger valid-check error:', priorValidErr);
     if (priorValid && priorValid.length) {
       console.log(`🔄 Skipping: valid ledger already exists for session=${sessionId}`);
       return;
@@ -371,10 +365,10 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
         created_at: new Date().toISOString(),
       }]);
     if (insLedgerErr) {
-      console.error('❌ Ledger insert error:', insLedgerErr);
+      console.error('Ledger insert error:', insLedgerErr);
       return;
     }
-    console.log(`✅ Ledger entry recorded for ${email}, session=${sessionId}`);
+    console.log(`Ledger entry recorded for ${email}, session=${sessionId}`);
 
     /* ------------------------------------------------------------------
        4️⃣ Credits table – skip if existing for this session
@@ -398,10 +392,10 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
           stripe_session_id: sessionId || null,
           created_at: new Date().toISOString(),
         }]);
-      if (insCreditErr) console.error('❌ Credits insert error:', insCreditErr);
-      else console.log(`✅ Credits inserted for ${email} (${productForCredits}) amount=${credits}`);
+      if (insCreditErr) console.error('Credits insert error:', insCreditErr);
+      else console.log(`Credits inserted for ${email} (${productForCredits}) amount=${credits}`);
     } else {
-      console.log(`🔄 Skipping duplicate credits insert for ${email} (session=${sessionId})`);
+      console.log(`Skipping duplicate credits insert for ${email} (session=${sessionId})`);
     }
 
     /* ------------------------------------------------------------------
@@ -419,17 +413,14 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     if (usd > 0) await bumpUserSpend(email, usd);
     await autoUpgradeIfEligible(email);
 
-    console.log(`🎉 Payment completed for ${email} — +${credits} credits, +$${usd} spend`);
+    console.log(`Payment completed for ${email} — +${credits} credits, +$${usd} spend`);
   } catch (error) {
-    console.error('❌ Payment handling error:', error);
+    console.error('Payment handling error:', error);
   }
 };
 
 
 
-
-
-/* ------------------------------- Manual Test ------------------------------- */
 const testManualPayment = async (req, res) => {
   try {
     const { email } = req.body;
@@ -439,14 +430,14 @@ const testManualPayment = async (req, res) => {
       id: 'cs_test_' + Math.random().toString(36).slice(2),
       metadata: { user_email: email, product_type: 'access_pass' },
       customer_email: email,
-      amount_total: 9900, // simulate $99
+      amount_total: 9900, 
       currency: 'usd'
     };
 
     await handleSuccessfulPayment(mockSession, `manual:${mockSession.id}`);
     res.json({ success: true, message: 'Manual payment test completed', email });
   } catch (error) {
-    console.error('❌ Manual test error:', error);
+    console.error('Manual test error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -462,14 +453,14 @@ const handleWebhook = async (req, res) => {
 
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    console.log('🔔 Webhook received:', event.type, 'Event ID:', event.id);
+    console.log('Webhook received:', event.type, 'Event ID:', event.id);
   } catch (err) {
-    console.error('❌ Webhook verification failed:', err.message);
+    console.error(' Webhook verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   // Global idempotency check (defense-in-depth)
-  console.log('🔍 Checking for duplicate event at webhook level:', event.id);
+  console.log('Checking for duplicate event at webhook level:', event.id);
   const { data: existingEvent, error: checkError } = await supabase
     .from('credits_ledger')
     .select('id, email, stripe_event_id')
@@ -477,12 +468,12 @@ const handleWebhook = async (req, res) => {
     .maybeSingle();
 
   if (checkError) {
-    console.error('❌ Error checking for duplicates in webhook:', checkError);
+    console.error('Error checking for duplicates in webhook:', checkError);
   }
 
   if (existingEvent) {
-    console.log('🔄 WEBHOOK DUPLICATE: Already processed event:', event.id, 'for email:', existingEvent.email);
-    console.log('🔄 Returning 200 to Stripe without processing');
+    console.log(' WEBHOOK DUPLICATE: Already processed event:', event.id, 'for email:', existingEvent.email);
+    console.log('Returning 200 to Stripe without processing');
     return res.json({ received: true, status: 'already_processed', event_id: event.id });
   }
 
@@ -490,39 +481,37 @@ const handleWebhook = async (req, res) => {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
-        console.log('🛒 Checkout session completed:', session.id, 'Payment status:', session.payment_status);
+        console.log('Checkout session completed:', session.id, 'Payment status:', session.payment_status);
         if (session.payment_status === 'paid' || session.status === 'complete') {
           await handleSuccessfulPayment(session, event.id);
         } else {
-          console.log('ℹ️ Session not paid yet:', session.id, session.payment_status);
+          console.log('ℹSession not paid yet:', session.id, session.payment_status);
         }
         break;
       }
       case 'checkout.session.async_payment_succeeded': {
         const session = event.data.object;
-        console.log('🔄 Async payment succeeded:', session.id);
+        console.log('Async payment succeeded:', session.id);
         await handleSuccessfulPayment(session, event.id);
         break;
       }
       case 'payment_intent.succeeded': {
-        // intentionally ignored for credits (we only process at session level)
         const pi = event.data.object;
-        console.log('✅ PaymentIntent succeeded (ignored for credits path):', pi.id);
+        console.log(' PaymentIntent succeeded (ignored for credits path):', pi.id);
         break;
       }
       default:
-        console.log(`ℹ️ Unhandled event type: ${event.type}`);
+        console.log(`ℹ Unhandled event type: ${event.type}`);
     }
 
-    console.log('✅ Webhook processing completed for event:', event.id);
+    console.log('Webhook processing completed for event:', event.id);
     res.json({ received: true, status: 'processed', event_id: event.id });
   } catch (err) {
-    console.error('❌ Webhook handler error:', err);
+    console.error(' Webhook handler error:', err);
     res.status(500).send('Webhook handler error');
   }
 };
 
-/* ---------------------------------- Exports --------------------------------- */
 module.exports = {
   createCheckoutSession,
   handleWebhook,
