@@ -207,11 +207,16 @@ const createCheckoutSession = async (req, res) => {
 
     const CROWBAR_PRICE = process.env.STRIPE_PRICE_CROWBAR_MASTER; // £39
     const ACCESS_PRICE  = process.env.STRIPE_PRICE_ACCESS_PASS;   // $99
-
+    const CAREDUEL = process.env.STRIPE_PRICE_CAREDUEL; // $10
+    const TALENTKONNECT = process.env.STRIPE_PRICE_TALENTKONNECT; // $7
+    const ECOWORLDBUY = process.env.STRIPE_PRICE_ECOWORLDBUY; // $7
     // Decide final priceId
     const priceByType = {
       access_pass: ACCESS_PRICE,
-      crowbar_master: CROWBAR_PRICE
+      crowbar_master: CROWBAR_PRICE,
+      careduel: CAREDUEL,
+      talentkonnect: TALENTKONNECT,
+      ecoworldbuy: ECOWORLDBUY,
     };
     const finalPriceId = bodyPriceId || priceByType[requestedType] || ACCESS_PRICE;
 
@@ -223,6 +228,9 @@ const createCheckoutSession = async (req, res) => {
     let inferredType = requestedType;
     if (finalPriceId === CROWBAR_PRICE) inferredType = 'crowbar_master';
     if (finalPriceId === ACCESS_PRICE)  inferredType = 'access_pass';
+    if (finalPriceId === CAREDUEL)  inferredType = 'careduel';
+    if (finalPriceId === TALENTKONNECT)  inferredType = 'talentkonnect';
+    if (finalPriceId === ECOWORLDBUY)  inferredType = 'ecoworldbuy';
 
     console.log('Creating Stripe session for:', email, 'product_type:', inferredType, 'priceId:', finalPriceId);
 
@@ -401,13 +409,59 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     /* ------------------------------------------------------------------
        5️⃣ Crowbar flag + user updates
     ------------------------------------------------------------------ */
-    if (isCrowbar) {
-      const { error: crowbarErr } = await supabase
-        .from('users')
-        .update({ crowbar_access: true, updated_at: new Date().toISOString() })
-        .eq('email', email);
-      if (crowbarErr) console.error('crowbar_access error:', crowbarErr);
-    }
+ if (metaProduct === 'crowbar_master') {
+  await supabase
+    .from('users')
+    .update({
+      crowbar_access: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
+
+if (metaProduct === 'access_pass') {
+  await supabase
+    .from('users')
+    .update({
+      crowbar_access: true,
+      full_access: true,
+      access_careduel: true,
+      access_ecoworldbuy: true,
+      access_talentkonnect: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
+
+if (metaProduct === 'careduel') {
+  await supabase
+    .from('users')
+    .update({
+      access_careduel: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
+
+if (metaProduct === 'ecoworldbuy') {
+  await supabase
+    .from('users')
+    .update({
+      access_ecoworldbuy: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
+
+if (metaProduct === 'talentkonnect') {
+  await supabase
+    .from('users')
+    .update({
+      access_talentkonnect: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
 
     await bumpUserCredits(email, credits);
     if (usd > 0) await bumpUserSpend(email, usd);
@@ -512,9 +566,76 @@ const handleWebhook = async (req, res) => {
   }
 };
 
+
+const getUserAccess = async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ error: 'Email parameter is required' });
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .select(
+        'email, total_spent, total_credits, full_access, crowbar_access, access_careduel, access_ecoworldbuy, access_talentkonnect, auto_upgraded_at, updated_at'
+      )
+      .eq('email', email)
+      .single();
+
+    if (error) {
+      console.error('getUserAccess error:', error);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ success: true, user: data });
+  } catch (err) {
+    console.error('getUserAccess catch:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+/* ------------------------------------------------------------------
+   🔗 SYNC USER FROM BRAND SITE (EcoWorldBuy, CareDuel, TalentKonnect)
+------------------------------------------------------------------ */
+const syncUserAccess = async (req, res) => {
+  try {
+    const { email, product_type } = req.body || {};
+    if (!email || !product_type) {
+      return res.status(400).json({ error: 'Missing email or product_type' });
+    }
+
+    const normEmail = (email || '').trim().toLowerCase();
+    const now = new Date().toISOString();
+
+    let updateData = { updated_at: now };
+
+    if (product_type === 'ecoworldbuy') updateData.access_ecoworldbuy = true;
+    if (product_type === 'careduel') updateData.access_careduel = true;
+    if (product_type === 'talentkonnect') updateData.access_talentkonnect = true;
+    if (product_type === 'crowbar_master') updateData.crowbar_access = true;
+
+    const { error } = await supabase
+      .from('users')
+      .upsert([{ email: normEmail, ...updateData }], { onConflict: 'email' });
+
+    if (error) {
+      console.error('syncUserAccess error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log(`✅ Synced user access for ${normEmail} [${product_type}]`);
+    res.json({ success: true, email: normEmail, updated: updateData });
+  } catch (err) {
+    console.error('syncUserAccess failed:', err);
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+};
+
 module.exports = {
   createCheckoutSession,
   handleWebhook,
   getSessionStatus,
   testManualPayment,
+  getUserAccess,
+  syncUserAccess,
 };

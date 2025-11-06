@@ -38,6 +38,9 @@ app.use(express.json());
 app.use('/api/credits', require('./routes/credits'));
 app.use('/api/stripe', require('./routes/stripe'));
 app.use('/api/gate', require('./routes/gate'));
+app.use('/api/bridge', require('./routes/bridge'));
+
+
 
 // Health check
 app.get('/health', (req, res) => {
