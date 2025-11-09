@@ -11,6 +11,10 @@ app.use(
       'http://localhost:3000',
       'http://127.0.0.1:3000',
       'https://crowbar-master-site.vercel.app',
+      'http://localhost:5173',
+      "https://www.ecoworldbuy.com",
+      "https://www.careduel.com",
+      "https://www.talentkonnect.com"
     ],
     credentials: true,
   })
