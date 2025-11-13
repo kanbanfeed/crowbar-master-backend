@@ -210,6 +210,7 @@ const createCheckoutSession = async (req, res) => {
     const CAREDUEL = process.env.STRIPE_PRICE_CAREDUEL; // $10
     const TALENTKONNECT = process.env.STRIPE_PRICE_TALENTKONNECT; // $7
     const ECOWORLDBUY = process.env.STRIPE_PRICE_ECOWORLDBUY; // $7
+    const POWEROFAUM = process.env.STRIPE_PRICE_POWEROFAUM;
     // Decide final priceId
     const priceByType = {
       access_pass: ACCESS_PRICE,
@@ -217,6 +218,7 @@ const createCheckoutSession = async (req, res) => {
       careduel: CAREDUEL,
       talentkonnect: TALENTKONNECT,
       ecoworldbuy: ECOWORLDBUY,
+      powerofaum: POWEROFAUM,
     };
     const finalPriceId = bodyPriceId || priceByType[requestedType] || ACCESS_PRICE;
 
@@ -231,6 +233,7 @@ const createCheckoutSession = async (req, res) => {
     if (finalPriceId === CAREDUEL)  inferredType = 'careduel';
     if (finalPriceId === TALENTKONNECT)  inferredType = 'talentkonnect';
     if (finalPriceId === ECOWORLDBUY)  inferredType = 'ecoworldbuy';
+    if (finalPriceId === POWEROFAUM) inferredType = 'powerofaum';
 
     console.log('Creating Stripe session for:', email, 'product_type:', inferredType, 'priceId:', finalPriceId);
 
@@ -326,6 +329,8 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       talentkonnect: 7,
       careduel: 3,
       ecoworldbuy: 7,
+      powerofaum:3,
+
     };
 
     const productForCredits = isCrowbar ? 'crowbar_master' : metaProduct;
@@ -428,6 +433,7 @@ if (metaProduct === 'access_pass') {
       access_careduel: true,
       access_ecoworldbuy: true,
       access_talentkonnect: true,
+      access_powerofaum:true,
       updated_at: new Date().toISOString(),
     })
     .eq('email', email);
@@ -458,6 +464,16 @@ if (metaProduct === 'talentkonnect') {
     .from('users')
     .update({
       access_talentkonnect: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('email', email);
+}
+
+if (metaProduct === 'powerofaum') {
+  await supabase
+    .from('users')
+    .update({
+      access_powerofaum: true,
       updated_at: new Date().toISOString(),
     })
     .eq('email', email);
@@ -577,7 +593,7 @@ const getUserAccess = async (req, res) => {
     const { data, error } = await supabase
       .from('users')
       .select(
-        'email, total_spent, total_credits, full_access, crowbar_access, access_careduel, access_ecoworldbuy, access_talentkonnect, auto_upgraded_at, updated_at'
+        'email, total_spent, total_credits, full_access, crowbar_access, access_careduel, access_ecoworldbuy, access_talentkonnect, access_powerofaum, auto_upgraded_at, updated_at'
       )
       .eq('email', email)
       .single();
@@ -613,6 +629,7 @@ const syncUserAccess = async (req, res) => {
     if (product_type === 'careduel') updateData.access_careduel = true;
     if (product_type === 'talentkonnect') updateData.access_talentkonnect = true;
     if (product_type === 'crowbar_master') updateData.crowbar_access = true;
+    if (product_type === 'powerofaum') updateData.access_powerofaum = true;
 
     const { error } = await supabase
       .from('users')
