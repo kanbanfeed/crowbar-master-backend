@@ -1,6 +1,7 @@
 const Stripe = require('stripe');
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { supabase } = require('../config/supabase');
+const { ensureReferralCodeForUser } = require('../utils/referrals');
 
 /* --------------------------------- Helpers -------------------------------- */
 
@@ -251,6 +252,8 @@ const createCheckoutSession = async (req, res) => {
 
 
 /* ----------------------- Handle Successful Payment ---------------------- */
+/* ----------------------- Handle Successful Payment ---------------------- */
+/* ----------------------- Handle Successful Payment ---------------------- */
 const handleSuccessfulPayment = async (session, sourceEventId = null) => {
   try {
     const email = normEmail(session?.metadata?.user_email || session?.customer_email);
@@ -262,30 +265,32 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     const sessionId = session?.id;
     const amountCents = Number.isFinite(session?.amount_total) ? session.amount_total : 0;
     const usd = amountCents / 100;
+
+    // 🔍 Tier from metadata (fallback basic)
     const tier = session?.metadata?.membership_tier || 'basic';
-    
-    // Define tier benefits according to business rules
+
+    // ✅ Final business rules for Day-1
     const tierBenefits = {
-      'discount19': {
+      discount19: {
         credits: 49,
         entries: 1,
         credit_multiplier: 1.0,
         membership_tier: 'discount19'
       },
-      'basic': {
-        credits: 49, 
+      basic: {
+        credits: 49,
         entries: 1,
         credit_multiplier: 1.0,
         membership_tier: 'basic'
       },
-      'pro': {
+      pro: {
         credits: 49,
         entries: 3,
         credit_multiplier: 1.5,
         membership_tier: 'pro'
       },
-      'elite': {
-        credits: 500,
+      elite: {
+        credits: 500,   // 🔴 Elite gets 500 credits
         entries: 10,
         credit_multiplier: 1.5,
         membership_tier: 'elite',
@@ -294,77 +299,112 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     };
 
     const benefits = tierBenefits[tier] || tierBenefits.basic;
-    
-    // Update user in database with tier benefits
+
+    console.log('💳 handleSuccessfulPayment:', {
+      email,
+      tier,
+      benefits,
+      amountUsd: usd
+    });
+
+    // 🔹 Get existing total_credits (so we can add new benefits)
+    const { data: existingUser, error: existingErr } = await supabase
+      .from('users')
+      .select('total_credits')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existingErr) {
+      console.error('Error fetching existing user for credits:', existingErr);
+    }
+
+    const prevCredits = existingUser?.total_credits || 0;
+    const newTotalCredits = prevCredits + benefits.credits;
+
+    // 🔹 Build user update payload
+    const nowIso = new Date().toISOString();
+
+    const userUpdate = {
+      email,
+      membership_tier: benefits.membership_tier,
+      membership_activated_at: nowIso,
+      entries_available: benefits.entries,
+      credit_multiplier: benefits.credit_multiplier,
+      total_credits: newTotalCredits,
+      updated_at: nowIso,
+      // Elite-specific benefits (UI placeholders)
+      ...(tier === 'elite' && {
+        elite_prep_access: true,
+        vip_onboarding: true,
+        marketplace_priority: true,
+        refund_on_event_end: benefits.refund_on_event_end || 250
+      }),
+      // Pro-specific benefits (UI placeholders)
+      ...(tier === 'pro' && {
+        priority_challenge: true,
+        pro_welcome_perk: true
+      }),
+      // Access flags (optional but useful for Day-1)
+      crowbar_access: true,
+      full_access: tier === 'pro' || tier === 'elite'
+    };
+
+    // ✅ Use UPSERT so new users also get a row
     const { error: userError } = await supabase
       .from('users')
-      .update({
-        membership_tier: benefits.membership_tier,
-        membership_activated_at: new Date().toISOString(),
-        entries_available: benefits.entries,
-        credit_multiplier: benefits.credit_multiplier,
-        updated_at: new Date().toISOString(),
-        // Elite-specific benefits (UI placeholders)
-        ...(tier === 'elite' && {
-          elite_prep_access: true,
-          vip_onboarding: true,
-          marketplace_priority: true,
-          refund_on_event_end: 250
-        }),
-        // Pro-specific benefits (UI placeholders)  
-        ...(tier === 'pro' && {
-          priority_challenge: true,
-          pro_welcome_perk: true
-        })
-      })
-      .eq('email', email);
+      .upsert(userUpdate, { onConflict: 'email' });
 
     if (userError) {
-      console.error('Error updating user membership:', userError);
+      console.error('Error upserting user membership:', userError);
       throw userError;
     }
 
-    // Update credits and spending
-    await bumpUserCredits(email, benefits.credits);
+    // 🔹 Track spend separately
     await bumpUserSpend(email, usd);
 
-    // Create payment record
+    // 🔹 Create payment record
     const { error: paymentError } = await supabase
-      .from('payments')
+      .from('credits_ledger')
       .insert({
         email: email,
-        session_id: sessionId,
+        stripe_session_id: sessionId,
         amount_usd: usd,
-        credits_awarded: benefits.credits,
-        entries_awarded: benefits.entries,
+        delta: benefits.credits,
+        reason: benefits.entries,
         membership_tier: benefits.membership_tier,
         product_type: session?.metadata?.product_type,
         stripe_event_id: sourceEventId,
-        created_at: new Date().toISOString()
+        created_at: nowIso
       });
 
     if (paymentError) {
       console.error('Error creating payment record:', paymentError);
     }
 
-    // Log tier-specific success messages
+    // 🔹 Ensure referral code exists for this user
+    try {
+      const code = await ensureReferralCodeForUser(supabase, email);
+      console.log(`Referral code for ${email}: ${code}`);
+    } catch (refErr) {
+      console.error('Error generating referral code for user:', refErr);
+    }
+
+    // Optional: log final success per tier
     const tierMessages = {
-      'elite': `🎉 ELITE membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      'pro': `⭐ PRO membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      'basic': `✅ BASIC membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      'discount19': `🎯 DISCOUNT membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`
+      elite: `🎉 ELITE membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      pro: `⭐ PRO membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      basic: `✅ BASIC membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      discount19: `🎯 DISCOUNT membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`
     };
 
     console.log(tierMessages[tier] || tierMessages.basic);
-
-    // TODO: Trigger welcome email here
     console.log(`📧 Welcome email should be triggered for ${email}`);
-
   } catch (error) {
     console.error('❌ Payment handling error:', error);
-    // Consider sending alert for failed payment processing
   }
 };
+
+
 
 /* ----------------------------- Webhook --------------------------------- */
 const handleWebhook = async (req, res) => {

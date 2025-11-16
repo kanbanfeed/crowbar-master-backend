@@ -51,6 +51,9 @@ app.use('/api/bridge', require('./routes/bridge'));
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Crowbar Credits API running' });
 });
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', message: 'Crowbar Credits API running' });
+});
 app.get('/', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
