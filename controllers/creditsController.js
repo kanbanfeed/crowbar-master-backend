@@ -139,82 +139,78 @@ const spendCredits = async (req, res) => {
 
 
 // Function to handle applying the referral/promo code
-const applyReferralCode = async (req, res) => {
-  const { user_email, promo_code } = req.body;
-
-  // Validate that both email and promo code are provided
-  if (!user_email || !promo_code) {
-    return res.status(400).json({ message: 'Email and promo code are required.' });
-  }
-
+async function applyReferralCode(req, res) {
   try {
-    // Check if the promo code exists and is unused
-    const { data: promoCodeData, error } = await supabase
-      .from('promo_referral_codes')
-      .select('*')
-      .eq('code', promo_code)
-      .eq('status', 'unused')
+    const { user_email, promo_code } = req.body || {};
+    const email = (user_email || '').toLowerCase();
+    const code = (promo_code || '').trim();
+
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ message: 'Valid user email is required' });
+    }
+    if (!code) {
+      return res.status(400).json({ message: 'Referral code is required' });
+    }
+
+    // 1. Find referrer by referral_code
+    const { data: referrer, error: refErr } = await supabase
+      .from('users')
+      .select('email, referral_code')
+      .eq('referral_code', code)
       .single();
 
-    if (error || !promoCodeData) {
-      return res.status(400).json({ message: 'Invalid or expired promo code.' });
+    if (refErr || !referrer) {
+      return res.status(404).json({ message: 'Invalid referral code' });
     }
 
-    // Extract the credits awarded by this promo code
-    const creditsAwarded = promoCodeData.credits_awarded;
-
-    // Get the current total credits of the user
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('total_spent, total_credits')
-      .eq('email', user_email)
-      .single();
-
-    if (userError || !userData) {
-      return res.status(400).json({ message: 'User not found.' });
+    // Cannot refer yourself
+    if (referrer.email.toLowerCase() === email) {
+      return res.status(400).json({ message: 'You cannot use your own referral code' });
     }
 
-    // Add the promo credits to the user's current balance
-    const updatedTotalCredits = userData.total_credits + creditsAwarded;
+    // 2. Make sure this user has not already used a code
+    const { data: existingReferral } = await supabase
+      .from('referrals')
+      .select('id')
+      .eq('referred_email', email)
+      .maybeSingle();
 
-    // Update the user's credits and mark the promo code as used
-    const { error: userUpdateError } = await supabase
-      .from('users')
-      .update({ total_credits: updatedTotalCredits })
-      .eq('email', user_email);
-
-    if (userUpdateError) {
-      return res.status(400).json({ message: 'Error updating user credits.' });
+    if (existingReferral) {
+      return res.status(400).json({ message: 'Referral code already used for this account' });
     }
 
+    // 3. Record referral relationship
+    const { error: insertErr } = await supabase
+      .from('referrals')
+      .insert({
+        referrer_email: referrer.email.toLowerCase(),
+        referred_email: email,
+        referral_code: code,
+      });
+
+    if (insertErr) {
+      console.error('Insert referral error:', insertErr);
+      return res.status(500).json({ message: 'Failed to record referral' });
+    }
+
+    // 4. Update referred user row
     await supabase
-      .from('promo_referral_codes')
-      .update({ status: 'used' }) 
-      .eq('code', promo_code);
+      .from('users')
+      .update({ referred_by: referrer.email.toLowerCase() })
+      .eq('email', email);
 
-    // Insert the promo credit into the credits_ledger
-    const { error: ledgerErr } = await supabase.from('credits_ledger').insert([{
-      email: user_email,
-      delta: creditsAwarded,
-      reason: 'promo_code_used',
-      origin_site: 'checkout',
-      stripe_event_id: null,
-      stripe_session_id: null,
-      amount_usd: 0,
-      created_at: new Date().toISOString(),
-    }]);
+    // 5. Award +25 credits to referrer
+    await earnCredits(referrer.email.toLowerCase(), 25, 'referral_signup');
 
-    if (ledgerErr) {
-      return res.status(400).json({ message: 'Error inserting ledger entry.' });
-    }
-
-    return res.status(200).json({ message: 'Promo code applied successfully.' });
-
+    return res.json({
+      success: true,
+      message: 'Referral code applied. Referrer has received +25 credits.',
+    });
   } catch (err) {
-    console.error('Error applying promo code:', err);
-    return res.status(500).json({ message: 'Internal server error.' });
+    console.error('applyReferralCode error:', err);
+    return res.status(500).json({ message: 'Server error applying referral code' });
   }
-};
+}
 
 
 

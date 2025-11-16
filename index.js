@@ -14,7 +14,8 @@ app.use(
       'http://localhost:5173',
       "https://www.ecoworldbuy.com",
       "https://www.careduel.com",
-      "https://www.talentkonnect.com"
+      "https://www.talentkonnect.com",
+      "http://localhost:3001"
     ],
     credentials: true,
   })

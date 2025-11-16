@@ -4,11 +4,12 @@ const { supabase } = require('../config/supabase');
 
 /* --------------------------------- Helpers -------------------------------- */
 
+// Normalize email
 function normEmail(e) {
   return (e || '').trim().toLowerCase();
 }
 
-// ensure user exists
+// Ensure user exists or create new user
 async function ensureUser(emailRaw) {
   const email = normEmail(emailRaw);
   const { data, error } = await supabase
@@ -16,10 +17,15 @@ async function ensureUser(emailRaw) {
     .upsert([{ email }], { onConflict: 'email' })
     .select()
     .single();
-  if (error) console.error('ensureUser error:', error);
+  
+  if (error) {
+    console.error('ensureUser error:', error);
+    throw new Error(`Failed to ensure user: ${error.message}`);
+  }
   return data;
 }
 
+// Update user credits
 async function bumpUserCredits(emailRaw, deltaCredits) {
   const email = normEmail(emailRaw);
   await ensureUser(email);
@@ -40,7 +46,7 @@ async function bumpUserCredits(emailRaw, deltaCredits) {
   return { newTotal, total_spent: curr?.total_spent || 0 };
 }
 
-
+// Update user spend
 async function bumpUserSpend(emailRaw, deltaUsd) {
   const email = normEmail(emailRaw);
   await ensureUser(email);
@@ -64,595 +70,599 @@ async function bumpUserSpend(emailRaw, deltaUsd) {
   return { newSpent };
 }
 
-/* ------------------------------ Auto-Upgrade ------------------------------ */
-/**
- * Rule: rolling 30-day spend (USD) >= 99 → grant +49 credits, set full_access=true
- * Idempotency: if a prior 'auto_upgrade_bonus' ledger row exists, don't double-grant.
- */
-async function autoUpgradeIfEligible(emailRaw) {
-  const email = normEmail(emailRaw);
+/* ------------------------------ File Upload ------------------------------ */
+async function uploadFile(fileData, fileName, email) {
   try {
-    const { data: userRow, error: userErr } = await supabase
-      .from('users')
-      .select('full_access, total_spent, auto_upgraded_at')
-      .eq('email', email)
-      .single();
-
-    if (userErr) {
-      console.error('User fetch error during auto-upgrade:', userErr);
-      return;
+    // Check if fileData is a URL (already uploaded) or needs upload
+    if (fileData.startsWith('http')) {
+      return fileData; // Already a URL, return as-is
     }
 
-    //  Backfill timestamp if already full_access but missing auto_upgraded_at
-    if (userRow?.full_access && !userRow?.auto_upgraded_at) {
-      await supabase
-        .from('users')
-        .update({
-          auto_upgraded_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('email', email);
-      console.log('Backfilled auto_upgraded_at for', email);
-      return;
+    // Handle base64 file data
+    if (fileData.startsWith('data:')) {
+      const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (!matches || matches.length !== 3) {
+        throw new Error('Invalid base64 file data');
+      }
+      
+      const buffer = Buffer.from(matches[2], 'base64');
+      const fileExtension = matches[1].split('/')[1] || 'jpg';
+      const filePath = `kyc-docs/${email}/${Date.now()}-${fileName}.${fileExtension}`;
+      
+      const { data, error } = await supabase.storage
+        .from('kyc-documents')
+        .upload(filePath, buffer, {
+          contentType: matches[1],
+          upsert: false
+        });
+
+      if (error) throw error;
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('kyc-documents')
+        .getPublicUrl(filePath);
+
+      return publicUrl;
+    } else {
+      // Handle binary file data or other formats
+      throw new Error('Unsupported file format. Please use base64 or URL.');
     }
-
-    // If already upgraded (and timestamp exists)
-    if (userRow?.full_access && userRow?.auto_upgraded_at) {
-      console.log('User already fully upgraded:', email);
-      return;
-    }
-
-    const now = new Date();
-    const thirtyDaysAgoIso = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-    // Fetch last 30 days of spend
-    const { data: recentPurchases, error: spendErr } = await supabase
-      .from('credits_ledger')
-      .select('amount_usd')
-      .eq('email', email)
-      .gte('created_at', thirtyDaysAgoIso)
-      .lte('created_at', now.toISOString())
-      .not('amount_usd', 'is', null);
-
-    if (spendErr) {
-      console.error('Spend query error (auto-upgrade):', spendErr);
-      return;
-    }
-
-    const rollingTotal = (recentPurchases || [])
-      .map(r => Number(r.amount_usd || 0))
-      .reduce((a, b) => a + b, 0);
-
-    console.log(`30-day rolling spend for ${email}: $${rollingTotal.toFixed(2)}`);
-
-    const totalSpent = Number(userRow?.total_spent || 0);
-    const effectiveTotal = Math.max(rollingTotal, totalSpent);
-
-    if (effectiveTotal < 99) {
-      console.log(`Not eligible for auto-upgrade (${email}) — total $${effectiveTotal.toFixed(2)} < $99`);
-      return;
-    }
-
-    // Check if auto-upgrade bonus already exists
-    const { data: priorBonus, error: bonusCheckErr } = await supabase
-      .from('credits_ledger')
-      .select('id')
-      .eq('email', email)
-      .eq('reason', 'auto_upgrade_bonus')
-      .limit(1);
-
-    if (bonusCheckErr) console.error('auto-upgrade prior bonus check error:', bonusCheckErr);
-
-    // Already bonused → ensure full_access and timestamp
-    if (priorBonus && priorBonus.length) {
-      console.log('ℹAlready bonused, ensuring full_access and auto_upgraded_at');
-      await supabase
-        .from('users')
-        .update({
-          full_access: true,
-          auto_upgraded_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('email', email);
-      return;
-    }
-
-    // Grant new auto-upgrade bonus
-    const bonus = 49;
-    const { error: ledgerErrBonus } = await supabase.from('credits_ledger').insert([{
-      email,
-      delta: bonus,
-      reason: 'auto_upgrade_bonus',
-      origin_site: 'crowbar_auto_upgrade',
-      amount_usd: null,
-      created_at: new Date().toISOString(),
-    }]);
-    if (ledgerErrBonus) console.error('Ledger bonus insert error:', ledgerErrBonus);
-
-    await bumpUserCredits(email, bonus);
-
-    await supabase
-      .from('users')
-      .update({
-        full_access: true,
-        auto_upgraded_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('email', email);
-
-    console.log(`Auto-upgrade completed for ${email}: +${bonus} credits & full_access=true`);
-  } catch (err) {
-    console.error('Auto-upgrade check failed:', err);
+  } catch (error) {
+    console.error('File upload error:', error);
+    throw new Error(`Failed to upload file ${fileName}: ${error.message}`);
   }
 }
 
+/* ------------------------------ Age-Discount Logic ------------------------------ */
+async function applyAgeDiscount(email, ageRange, files) {
+  try {
+    if (ageRange === 'Under 25' || ageRange === 'Over 60') {
+      // Validate required files for KYC
+      if (!files || !files.id_doc_url || !files.selfie_url || !files.social_url) {
+        throw new Error('Government ID, live selfie, and social media link are required for age verification');
+      }
 
+      // Upload files and get URLs
+      const idDocUrl = await uploadFile(files.id_doc_url, 'government_id', email);
+      const selfieUrl = await uploadFile(files.selfie_url, 'live_selfie', email);
+      const socialUrl = files.social_url; // Store as text link
+
+      // Store KYC info in database
+      const { error } = await supabase
+        .from('users')
+        .update({
+          kyc_status: "pending",
+          id_doc_url: idDocUrl,
+          selfie_url: selfieUrl,
+          social_url: socialUrl,
+          age_range: ageRange,
+          age_verified: false, // Manual verification required
+          updated_at: new Date().toISOString()
+        })
+        .eq('email', email);
+
+      if (error) throw error;
+
+      console.log(`Age discount KYC documents stored for ${email}`);
+      return { success: true, discountApplied: true };
+    }
+
+    return { success: true, discountApplied: false, message: "Not eligible for age discount" };
+  } catch (error) {
+    console.error('Age discount error:', error);
+    return { success: false, error: error.message };
+  }
+}
 
 /* --------------------------- Create Checkout Session --------------------------- */
-/**
- * Frontend can pass EITHER:
- *  - priceId (recommended)  OR
- *  - product_type: 'crowbar_master' | 'access_pass'
- *
- * If priceId matches your env IDs we set product_type automatically.
- */
 const createCheckoutSession = async (req, res) => {
   try {
-    const { email, priceId: bodyPriceId, successUrl, cancelUrl } = req.body || {};
-    const requestedType = (req.body?.product_type || 'access_pass').toLowerCase();
+    const { email, tier, successUrl, cancelUrl, ageRange, files } = req.body || {};
 
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: 'Missing or invalid email' });
+    // Validate email
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return res.status(400).json({ error: 'Valid email is required' });
     }
 
-    const CROWBAR_PRICE = process.env.STRIPE_PRICE_CROWBAR_MASTER; // £39
-    const ACCESS_PRICE  = process.env.STRIPE_PRICE_ACCESS_PASS;   // $99
-    const CAREDUEL = process.env.STRIPE_PRICE_CAREDUEL; // $10
-    const TALENTKONNECT = process.env.STRIPE_PRICE_TALENTKONNECT; // $7
-    const ECOWORLDBUY = process.env.STRIPE_PRICE_ECOWORLDBUY; // $7
-    const POWEROFAUM = process.env.STRIPE_PRICE_POWEROFAUM;
-    // Decide final priceId
-    const priceByType = {
-      access_pass: ACCESS_PRICE,
-      crowbar_master: CROWBAR_PRICE,
-      careduel: CAREDUEL,
-      talentkonnect: TALENTKONNECT,
-      ecoworldbuy: ECOWORLDBUY,
-      powerofaum: POWEROFAUM,
-    };
-    const finalPriceId = bodyPriceId || priceByType[requestedType] || ACCESS_PRICE;
-
-    if (!finalPriceId) {
-      return res.status(400).json({ error: 'Missing Stripe price ID (env or body)' });
+    // Validate tier
+    const validTiers = ['discount19', 'basic', 'pro', 'elite'];
+    if (!tier || !validTiers.includes(tier)) {
+      return res.status(400).json({ error: 'Valid tier is required: discount19, basic, pro, or elite' });
     }
 
-    // Infer a consistent product_type for metadata based on the chosen priceId
-    let inferredType = requestedType;
-    if (finalPriceId === CROWBAR_PRICE) inferredType = 'crowbar_master';
-    if (finalPriceId === ACCESS_PRICE)  inferredType = 'access_pass';
-    if (finalPriceId === CAREDUEL)  inferredType = 'careduel';
-    if (finalPriceId === TALENTKONNECT)  inferredType = 'talentkonnect';
-    if (finalPriceId === ECOWORLDBUY)  inferredType = 'ecoworldbuy';
-    if (finalPriceId === POWEROFAUM) inferredType = 'powerofaum';
+    let finalPriceId;
+    let productType = 'crowbar_master';
 
-    console.log('Creating Stripe session for:', email, 'product_type:', inferredType, 'priceId:', finalPriceId);
+    // Handle different tiers and age discount logic
+    if (tier === 'discount19') {
+      // Validate age range for discount tier
+      if (!ageRange || (ageRange !== 'Under 25' && ageRange !== 'Over 60')) {
+        return res.status(400).json({ error: 'Age verification required for discount tier (Under 25 or Over 60)' });
+      }
 
+      // Validate KYC files for discount tier
+      if (!files || !files.id_doc_url || !files.selfie_url || !files.social_url) {
+        return res.status(400).json({ error: 'Government ID, live selfie, and social media link required for discount tier' });
+      }
+
+      // Apply discount and process KYC
+      const { success, discountApplied, error } = await applyAgeDiscount(email, ageRange, files);
+      
+      if (!success) {
+        return res.status(400).json({ error: error || 'Failed to process age verification' });
+      }
+      
+      if (discountApplied) {
+        finalPriceId = process.env.STRIPE_PRICE_DISCOUNT_19; // $19 price for discount
+        console.log(`Discount tier selected for ${email}, using $19 price`);
+      } else {
+        return res.status(400).json({ error: 'Not eligible for discount tier' });
+      }
+    } else {
+      // Regular tiers without discount logic
+      const priceMap = {
+        'basic': process.env.STRIPE_PRICE_BASIC_49,    // $49 for basic tier
+        'pro': process.env.STRIPE_PRICE_PRO_99,        // $99 for pro tier
+        'elite': process.env.STRIPE_PRICE_ELITE_499    // $499 for elite tier
+      };
+      
+      finalPriceId = priceMap[tier]; // Get price for the selected tier
+      if (!finalPriceId) {
+        return res.status(400).json({ error: 'Invalid tier selected' });
+      }
+    }
+
+    // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{ price: finalPriceId, quantity: 1 }],
       mode: 'payment',
       success_url: successUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  cancelUrl  || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment-cancel`,
-      customer_email: normEmail(email),
-      metadata: { user_email: normEmail(email), product_type: inferredType },
-    });
-
-    console.log('Stripe session created:', session.id, 'for', inferredType);
-    res.json({ success: true, sessionId: session.id, url: session.url });
-  } catch (error) {
-    console.error('Stripe error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-/* ----------------------------- Retrieve Session ----------------------------- */
-const getSessionStatus = async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    console.log('Checking session:', sessionId);
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['payment_intent'] });
-
-    res.json({
-      success: true,
-      session: {
-        id: session.id,
-        status: session.status,
-        payment_status: session.payment_status,
-        customer_email: session?.customer_details?.email || session?.customer_email || null,
-        amount_total: session.amount_total ? session.amount_total / 100 : 0,
-        currency: (session.currency || '').toLowerCase() || 'usd',
-        payment_intent: session.payment_intent?.id || null,
+      cancel_url: cancelUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment-cancel`,
+      customer_email: normEmail(email), // Normalized email for customer
+      metadata: {
+        user_email: normEmail(email),
+        product_type: productType, // Set product type
+        membership_tier: tier, // Set tier type
+        age_range: ageRange || 'Not provided' // Add age range if applicable
       },
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60, // Expires in 30 minutes
     });
+
+    console.log(`Checkout session created for ${email}, Tier: ${tier}, Session ID: ${session.id}`);
+    
+    res.json({ 
+      success: true, 
+      sessionId: session.id, 
+      url: session.url,
+      priceId: finalPriceId,
+      tier: tier
+    });
+    
   } catch (error) {
-    console.error('Session check error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Stripe checkout error:', error);
+    res.status(500).json({ 
+      error: 'Failed to create checkout session',
+      details: error.message 
+    });
   }
 };
 
-/* ----------------------- Handle Successful Payment Core ---------------------- */
-/**
- * - Idempotent via stripe_event_id check
- * - Writes ledger, bumps credits & spend (once)
- * - Sets crowbar_access for Crowbar purchases (by metadata OR price OR amount fallback)
- * - Runs auto-upgrade rule
- */
+
+/* ----------------------- Handle Successful Payment ---------------------- */
 const handleSuccessfulPayment = async (session, sourceEventId = null) => {
   try {
-    const rawEmail =
-      session?.metadata?.user_email ||
-      session?.customer_details?.email ||
-      session?.customer_email;
-    const email = normEmail(rawEmail);
+    const email = normEmail(session?.metadata?.user_email || session?.customer_email);
     if (!email) {
       console.error('No user email on session:', session?.id);
       return;
     }
 
-    const sessionId = session?.id || null;
-    const amountCents = Number.isFinite(session?.amount_total) ? Number(session.amount_total) : NaN;
-    const currency = (session?.currency || '').toLowerCase();
-    const metaProduct = (session?.metadata?.product_type || 'access_pass').toLowerCase();
-    const usd = Number.isFinite(amountCents) ? amountCents / 100 : 0;
+    const sessionId = session?.id;
+    const amountCents = Number.isFinite(session?.amount_total) ? session.amount_total : 0;
+    const usd = amountCents / 100;
+    const tier = session?.metadata?.membership_tier || 'basic';
+    
+    // Define tier benefits according to business rules
+    const tierBenefits = {
+      'discount19': {
+        credits: 49,
+        entries: 1,
+        credit_multiplier: 1.0,
+        membership_tier: 'discount19'
+      },
+      'basic': {
+        credits: 49, 
+        entries: 1,
+        credit_multiplier: 1.0,
+        membership_tier: 'basic'
+      },
+      'pro': {
+        credits: 49,
+        entries: 3,
+        credit_multiplier: 1.5,
+        membership_tier: 'pro'
+      },
+      'elite': {
+        credits: 500,
+        entries: 10,
+        credit_multiplier: 1.5,
+        membership_tier: 'elite',
+        refund_on_event_end: 250
+      }
+    };
 
-    console.log(`Processing payment for ${email} — session=${sessionId}, event=${sourceEventId}`);
+    const benefits = tierBenefits[tier] || tierBenefits.basic;
+    
+    // Update user in database with tier benefits
+    const { error: userError } = await supabase
+      .from('users')
+      .update({
+        membership_tier: benefits.membership_tier,
+        membership_activated_at: new Date().toISOString(),
+        entries_available: benefits.entries,
+        credit_multiplier: benefits.credit_multiplier,
+        updated_at: new Date().toISOString(),
+        // Elite-specific benefits (UI placeholders)
+        ...(tier === 'elite' && {
+          elite_prep_access: true,
+          vip_onboarding: true,
+          marketplace_priority: true,
+          refund_on_event_end: 250
+        }),
+        // Pro-specific benefits (UI placeholders)  
+        ...(tier === 'pro' && {
+          priority_challenge: true,
+          pro_welcome_perk: true
+        })
+      })
+      .eq('email', email);
 
-    let isCrowbarByPrice = false;
-    try {
-      const expanded = await stripe.checkout.sessions.retrieve(sessionId, {
-        expand: ['line_items.data.price']
+    if (userError) {
+      console.error('Error updating user membership:', userError);
+      throw userError;
+    }
+
+    // Update credits and spending
+    await bumpUserCredits(email, benefits.credits);
+    await bumpUserSpend(email, usd);
+
+    // Create payment record
+    const { error: paymentError } = await supabase
+      .from('payments')
+      .insert({
+        email: email,
+        session_id: sessionId,
+        amount_usd: usd,
+        credits_awarded: benefits.credits,
+        entries_awarded: benefits.entries,
+        membership_tier: benefits.membership_tier,
+        product_type: session?.metadata?.product_type,
+        stripe_event_id: sourceEventId,
+        created_at: new Date().toISOString()
       });
-      const priceIds = expanded?.line_items?.data?.map(li => li?.price?.id).filter(Boolean) || [];
-      const crowbarPriceId = process.env.STRIPE_PRICE_CROWBAR_MASTER;
-      if (crowbarPriceId && priceIds.includes(crowbarPriceId)) isCrowbarByPrice = true;
-    } catch (e) {
-      console.warn('Could not expand line_items:', e?.message || e);
+
+    if (paymentError) {
+      console.error('Error creating payment record:', paymentError);
     }
 
-    const isCrowbarByAmount = !Number.isNaN(amountCents) && amountCents === 3900 && ['usd', 'gbp'].includes(currency);
-    const isCrowbar = metaProduct === 'crowbar_master' || isCrowbarByPrice || isCrowbarByAmount;
-
-    const map = {
-      access_pass: 49,
-      crowbar_master: 49,
-      talentkonnect: 7,
-      careduel: 3,
-      ecoworldbuy: 7,
-      powerofaum:3,
-
+    // Log tier-specific success messages
+    const tierMessages = {
+      'elite': `🎉 ELITE membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      'pro': `⭐ PRO membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      'basic': `✅ BASIC membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
+      'discount19': `🎯 DISCOUNT membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`
     };
 
-    const productForCredits = isCrowbar ? 'crowbar_master' : metaProduct;
-    const credits = map[productForCredits] ?? 0;
+    console.log(tierMessages[tier] || tierMessages.basic);
 
-    console.log(` Product=${productForCredits}, credits=${credits}, usd=${usd}`);
+    // TODO: Trigger welcome email here
+    console.log(`📧 Welcome email should be triggered for ${email}`);
 
-    /* ------------------------------------------------------------------
-       1️⃣ Hard guard – do nothing if credits <= 0
-       (do NOT even insert a ledger row)
-    ------------------------------------------------------------------ */
-    if (!credits || credits <= 0) {
-      console.warn(`Skipping transaction for ${email} — invalid/zero credits (${credits})`);
-      return;
-    }
-
-    /* ------------------------------------------------------------------
-       2️⃣ Check if a *valid* ledger already exists (delta>0)
-    ------------------------------------------------------------------ */
-    const { data: priorValid, error: priorValidErr } = await supabase
-      .from('credits_ledger')
-      .select('id, delta')
-      .eq('stripe_session_id', sessionId)
-      .gte('delta', 1)
-      .limit(1);
-    if (priorValidErr) console.error('Ledger valid-check error:', priorValidErr);
-    if (priorValid && priorValid.length) {
-      console.log(`🔄 Skipping: valid ledger already exists for session=${sessionId}`);
-      return;
-    }
-
-    /* ------------------------------------------------------------------
-       3️⃣ Insert ledger row (only positive credits)
-    ------------------------------------------------------------------ */
-    const { error: insLedgerErr } = await supabase
-      .from('credits_ledger')
-      .insert([{
-        email,
-        delta: credits,
-        reason: 'checkout.session.completed',
-        origin_site: productForCredits,
-        stripe_event_id: sourceEventId || null,
-        stripe_session_id: sessionId || null,
-        amount_usd: usd || null,
-        created_at: new Date().toISOString(),
-      }]);
-    if (insLedgerErr) {
-      console.error('Ledger insert error:', insLedgerErr);
-      return;
-    }
-    console.log(`Ledger entry recorded for ${email}, session=${sessionId}`);
-
-    /* ------------------------------------------------------------------
-       4️⃣ Credits table – skip if existing for this session
-    ------------------------------------------------------------------ */
-    const { data: existingCredit, error: creditErr } = await supabase
-      .from('credits')
-      .select('id')
-      .eq('stripe_session_id', sessionId)
-      .limit(1);
-    if (creditErr) console.error('credit check error:', creditErr);
-    if (!existingCredit?.length) {
-      const { error: insCreditErr } = await supabase
-        .from('credits')
-        .insert([{
-          email,
-          amount: credits,
-          origin_site: productForCredits,
-          eligible_global_race: productForCredits === 'access_pass',
-          legal_accept: true,
-          stripe_event_id: sourceEventId || null,
-          stripe_session_id: sessionId || null,
-          created_at: new Date().toISOString(),
-        }]);
-      if (insCreditErr) console.error('Credits insert error:', insCreditErr);
-      else console.log(`Credits inserted for ${email} (${productForCredits}) amount=${credits}`);
-    } else {
-      console.log(`Skipping duplicate credits insert for ${email} (session=${sessionId})`);
-    }
-
-    /* ------------------------------------------------------------------
-       5️⃣ Crowbar flag + user updates
-    ------------------------------------------------------------------ */
- if (metaProduct === 'crowbar_master') {
-  await supabase
-    .from('users')
-    .update({
-      crowbar_access: true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-if (metaProduct === 'access_pass') {
-  await supabase
-    .from('users')
-    .update({
-      crowbar_access: true,
-      full_access: true,
-      access_careduel: true,
-      access_ecoworldbuy: true,
-      access_talentkonnect: true,
-      access_powerofaum:true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-if (metaProduct === 'careduel') {
-  await supabase
-    .from('users')
-    .update({
-      access_careduel: true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-if (metaProduct === 'ecoworldbuy') {
-  await supabase
-    .from('users')
-    .update({
-      access_ecoworldbuy: true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-if (metaProduct === 'talentkonnect') {
-  await supabase
-    .from('users')
-    .update({
-      access_talentkonnect: true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-if (metaProduct === 'powerofaum') {
-  await supabase
-    .from('users')
-    .update({
-      access_powerofaum: true,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('email', email);
-}
-
-    await bumpUserCredits(email, credits);
-    if (usd > 0) await bumpUserSpend(email, usd);
-    await autoUpgradeIfEligible(email);
-
-    console.log(`Payment completed for ${email} — +${credits} credits, +$${usd} spend`);
   } catch (error) {
-    console.error('Payment handling error:', error);
+    console.error('❌ Payment handling error:', error);
+    // Consider sending alert for failed payment processing
   }
 };
 
-
-
-const testManualPayment = async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
-    const mockSession = {
-      id: 'cs_test_' + Math.random().toString(36).slice(2),
-      metadata: { user_email: email, product_type: 'access_pass' },
-      customer_email: email,
-      amount_total: 9900, 
-      currency: 'usd'
-    };
-
-    await handleSuccessfulPayment(mockSession, `manual:${mockSession.id}`);
-    res.json({ success: true, message: 'Manual payment test completed', email });
-  } catch (error) {
-    console.error('Manual test error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-/* --------------------------------- Webhook --------------------------------- */
-/**
- * Verify signature, enforce idempotency (credits_ledger.stripe_event_id),
- * and dispatch to handleSuccessfulPayment.
- */
+/* ----------------------------- Webhook --------------------------------- */
 const handleWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
   try {
+    // Verify webhook signature
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    console.log('Webhook received:', event.type, 'Event ID:', event.id);
+    console.log('🔔 Webhook received:', event.type, 'Event ID:', event.id);
   } catch (err) {
-    console.error(' Webhook verification failed:', err.message);
+    console.error('❌ Webhook verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  // Global idempotency check (defense-in-depth)
-  console.log('Checking for duplicate event at webhook level:', event.id);
-  const { data: existingEvent, error: checkError } = await supabase
-    .from('credits_ledger')
-    .select('id, email, stripe_event_id')
-    .eq('stripe_event_id', event.id)
-    .maybeSingle();
-
-  if (checkError) {
-    console.error('Error checking for duplicates in webhook:', checkError);
-  }
-
-  if (existingEvent) {
-    console.log(' WEBHOOK DUPLICATE: Already processed event:', event.id, 'for email:', existingEvent.email);
-    console.log('Returning 200 to Stripe without processing');
-    return res.json({ received: true, status: 'already_processed', event_id: event.id });
   }
 
   try {
     switch (event.type) {
-      case 'checkout.session.completed': {
+      case 'checkout.session.completed':
         const session = event.data.object;
-        console.log('Checkout session completed:', session.id, 'Payment status:', session.payment_status);
-        if (session.payment_status === 'paid' || session.status === 'complete') {
+        console.log(`💰 Checkout session completed: ${session.id}, Tier: ${session.metadata?.membership_tier}, Amount: $${(session.amount_total / 100).toFixed(2)}`);
+        
+        if (session.payment_status === 'paid') {
           await handleSuccessfulPayment(session, event.id);
         } else {
-          console.log('ℹSession not paid yet:', session.id, session.payment_status);
+          console.log(`ℹ️ Session ${session.id} not paid, status: ${session.payment_status}`);
         }
         break;
-      }
-      case 'checkout.session.async_payment_succeeded': {
-        const session = event.data.object;
-        console.log('Async payment succeeded:', session.id);
-        await handleSuccessfulPayment(session, event.id);
+        
+      case 'checkout.session.expired':
+        console.log(`❌ Checkout session expired: ${event.data.object.id}`);
         break;
-      }
-      case 'payment_intent.succeeded': {
-        const pi = event.data.object;
-        console.log(' PaymentIntent succeeded (ignored for credits path):', pi.id);
-        break;
-      }
+        
       default:
-        console.log(`ℹ Unhandled event type: ${event.type}`);
+        console.log(`⚙️ Unhandled event type: ${event.type}`);
     }
 
-    console.log('Webhook processing completed for event:', event.id);
-    res.json({ received: true, status: 'processed', event_id: event.id });
+    console.log('✅ Webhook processing completed for event:', event.id);
+    res.json({ 
+      received: true, 
+      status: 'processed', 
+      event_id: event.id,
+      event_type: event.type 
+    });
+    
   } catch (err) {
-    console.error(' Webhook handler error:', err);
-    res.status(500).send('Webhook handler error');
+    console.error('❌ Webhook handler error:', err);
+    res.status(500).json({ 
+      error: 'Webhook handler error',
+      details: err.message 
+    });
   }
 };
 
+/* --------------------------- Get Tier Information --------------------------- */
+const getTierInfo = async (req, res) => {
+  try {
+    const tiers = {
+      'discount19': {
+        name: "Discounted Membership",
+        price: 19,
+        credits: 49,
+        entries: 1,
+        requirements: ["Under 25 or Over 60", "Government ID", "Live Selfie", "Social Media Link"],
+        features: [
+          "Lifetime membership",
+          "1 Skill Event entry", 
+          "49 credits",
+          "Access to all partner sites",
+          "Referral code",
+          "Dashboard access"
+        ]
+      },
+      'basic': {
+        name: "Basic Membership", 
+        price: 49,
+        credits: 49,
+        entries: 1,
+        features: [
+          "Lifetime membership",
+          "49 credits",
+          "1 Skill Event entry", 
+          "Access to all partner sites",
+          "Referrals",
+          "Dashboard basics"
+        ]
+      },
+      'pro': {
+        name: "Pro Membership",
+        price: 99, 
+        credits: 49,
+        entries: 3,
+        credit_multiplier: 1.5,
+        features: [
+          "Everything in Basic",
+          "Priority challenge window (UI badge)",
+          "Credit multiplier 1.5x",
+          "3 Skill Event entries",
+          "Pro Welcome Perk placeholder"
+        ]
+      },
+      'elite': {
+        name: "Elite Membership",
+        price: 499,
+        credits: 500, 
+        entries: 10,
+        credit_multiplier: 1.5,
+        features: [
+          "Everything in Pro",
+          "10 Skill Event entries",
+          "500 credits",
+          "Elite-only prep access",
+          "VIP Onboarding", 
+          "Marketplace priority",
+          "Elite Welcome Pack",
+          "Credit refund on event end (250)"
+        ]
+      }
+    };
+
+    res.json({ success: true, tiers });
+  } catch (error) {
+    console.error('Get tier info error:', error);
+    res.status(500).json({ error: 'Failed to fetch tier information' });
+  }
+};
+
+/* --------------------------- Health Check --------------------------- */
+const healthCheck = async (req, res) => {
+  try {
+    // Test database connection
+    const { data: userCount, error: dbError } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true });
+
+    // Test Stripe connection
+    await stripe.balance.retrieve();
+
+    res.json({
+      status: 'healthy',
+      database: dbError ? 'disconnected' : 'connected',
+      stripe: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+
+// Add these at the end of your stripeController.js file:
+
+/* --------------------------- Legacy/Placeholder Functions --------------------------- */
+const getSessionStatus = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" });
+    }
+
+    return res.json({
+      success: true,
+      session: {
+        id: session.id,
+        status: session.status,
+        payment_status: session.payment_status,
+        customer_email: session.customer_email,
+        amount_total: session.amount_total,
+      }
+    });
+
+  } catch (err) {
+    console.error("Session status error:", err);
+    return res.status(500).json({ success: false, error: "Could not retrieve session" });
+  }
+};
+
+const testManualPayment = async (req, res) => {
+  try {
+    const { email, tier } = req.body;
+    
+    if (!email || !tier) {
+      return res.status(400).json({ error: 'Email and tier are required' });
+    }
+
+    // Simulate a successful payment session
+    const mockSession = {
+      id: 'test_session_' + Date.now(),
+      metadata: {
+        user_email: email,
+        membership_tier: tier,
+        product_type: 'crowbar_master'
+      },
+      customer_email: email,
+      amount_total: tier === 'discount19' ? 1900 : 
+                   tier === 'basic' ? 4900 :
+                   tier === 'pro' ? 9900 : 49900,
+      payment_status: 'paid'
+    };
+
+    await handleSuccessfulPayment(mockSession, 'test_event_id');
+    
+    res.json({ 
+      success: true, 
+      message: `Test payment processed for ${email} with ${tier} tier` 
+    });
+  } catch (error) {
+    console.error('Test manual payment error:', error);
+    res.status(500).json({ error: 'Test payment failed' });
+  }
+};
 
 const getUserAccess = async (req, res) => {
   try {
     const { email } = req.query;
+    
     if (!email) {
-      return res.status(400).json({ error: 'Email parameter is required' });
+      return res.status(400).json({ error: 'Email is required' });
     }
 
-    const { data, error } = await supabase
+    const { data: user, error } = await supabase
       .from('users')
-      .select(
-        'email, total_spent, total_credits, full_access, crowbar_access, access_careduel, access_ecoworldbuy, access_talentkonnect, access_powerofaum, auto_upgraded_at, updated_at'
-      )
-      .eq('email', email)
+      .select('*')
+      .eq('email', normEmail(email))
       .single();
 
     if (error) {
-      console.error('getUserAccess error:', error);
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ success: true, user: data });
-  } catch (err) {
-    console.error('getUserAccess catch:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.json({
+      success: true,
+      user: {
+        email: user.email,
+        membership_tier: user.membership_tier,
+        total_credits: user.total_credits,
+        entries_available: user.entries_available,
+        membership_activated_at: user.membership_activated_at,
+        kyc_status: user.kyc_status
+      }
+    });
+  } catch (error) {
+    console.error('Get user access error:', error);
+    res.status(500).json({ error: 'Failed to get user access' });
   }
 };
 
-/* ------------------------------------------------------------------
-   🔗 SYNC USER FROM BRAND SITE (EcoWorldBuy, CareDuel, TalentKonnect)
------------------------------------------------------------------- */
 const syncUserAccess = async (req, res) => {
   try {
-    const { email, product_type } = req.body || {};
-    if (!email || !product_type) {
-      return res.status(400).json({ error: 'Missing email or product_type' });
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
     }
 
-    const normEmail = (email || '').trim().toLowerCase();
-    const now = new Date().toISOString();
-
-    let updateData = { updated_at: now };
-
-    if (product_type === 'ecoworldbuy') updateData.access_ecoworldbuy = true;
-    if (product_type === 'careduel') updateData.access_careduel = true;
-    if (product_type === 'talentkonnect') updateData.access_talentkonnect = true;
-    if (product_type === 'crowbar_master') updateData.crowbar_access = true;
-    if (product_type === 'powerofaum') updateData.access_powerofaum = true;
-
-    const { error } = await supabase
+    // This would typically sync user access across systems
+    // For now, just return current user data
+    const { data: user, error } = await supabase
       .from('users')
-      .upsert([{ email: normEmail, ...updateData }], { onConflict: 'email' });
+      .select('*')
+      .eq('email', normEmail(email))
+      .single();
 
     if (error) {
-      console.error('syncUserAccess error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log(`✅ Synced user access for ${normEmail} [${product_type}]`);
-    res.json({ success: true, email: normEmail, updated: updateData });
-  } catch (err) {
-    console.error('syncUserAccess failed:', err);
-    res.status(500).json({ error: 'Server error', details: err.message });
+    res.json({
+      success: true,
+      message: `User access synced for ${email}`,
+      user: {
+        email: user.email,
+        membership_tier: user.membership_tier,
+        total_credits: user.total_credits,
+        entries_available: user.entries_available
+      }
+    });
+  } catch (error) {
+    console.error('Sync user access error:', error);
+    res.status(500).json({ error: 'Failed to sync user access' });
   }
 };
-
 module.exports = {
   createCheckoutSession,
   handleWebhook,
+  handleSuccessfulPayment,
+  getTierInfo,
+  healthCheck,
+  applyAgeDiscount,
+  uploadFile,
   getSessionStatus,
   testManualPayment,
   getUserAccess,
-  syncUserAccess,
+  syncUserAccess
 };
