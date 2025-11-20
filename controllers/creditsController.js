@@ -141,9 +141,9 @@ const spendCredits = async (req, res) => {
 // Function to handle applying the referral/promo code
 async function applyReferralCode(req, res) {
   try {
-    const { user_email, promo_code } = req.body || {};
-    const email = (user_email || '').toLowerCase();
-    const code = (promo_code || '').trim();
+    const { referred_email, referral_code } = req.body || {};
+    const email = (referred_email || '').toLowerCase();
+    const code = (referral_code || '').trim();
 
     if (!email || !email.includes('@')) {
       return res.status(400).json({ message: 'Valid user email is required' });
@@ -193,14 +193,56 @@ async function applyReferralCode(req, res) {
       return res.status(500).json({ message: 'Failed to record referral' });
     }
 
-    // 4. Update referred user row
+    // 4. Update referred user row (who used the code)
     await supabase
       .from('users')
       .update({ referred_by: referrer.email.toLowerCase() })
       .eq('email', email);
 
-    // 5. Award +25 credits to referrer
-    await earnCredits(referrer.email.toLowerCase(), 25, 'referral_signup');
+    // 5. Award +25 credits to referrer (NO earnCredits() here)
+    const refEmail = referrer.email.toLowerCase();
+    const delta = 25;
+
+    // 5a. Get current credits of referrer
+    const { data: refUser, error: refUserErr } = await supabase
+      .from('users')
+      .select('total_credits')
+      .eq('email', refEmail)
+      .maybeSingle();
+
+    if (refUserErr) {
+      console.error('applyReferralCode: error fetching referrer user', refUserErr);
+      return res.status(500).json({ message: 'Failed to fetch referrer for credits' });
+    }
+
+    const prevCredits = refUser?.total_credits || 0;
+    const newTotalCredits = prevCredits + delta;
+
+    // 5b. Update total_credits in users table
+    const { error: updateErr } = await supabase
+      .from('users')
+      .update({ total_credits: newTotalCredits })
+      .eq('email', refEmail);
+
+    if (updateErr) {
+      console.error('applyReferralCode: error updating referrer credits', updateErr);
+      return res.status(500).json({ message: 'Failed to update referrer credits' });
+    }
+
+    // 5c. Insert a row into credits_ledger
+    const { error: ledgerErr } = await supabase
+      .from('credits_ledger')
+      .insert({
+        email: refEmail,
+        delta,
+        reason: 'referral_signup',
+        origin_site: 'crowbar',
+      });
+
+    if (ledgerErr) {
+      console.error('applyReferralCode: ledger insert error', ledgerErr);
+      return res.status(500).json({ message: 'Failed to write referral credits ledger' });
+    }
 
     return res.json({
       success: true,
@@ -211,6 +253,7 @@ async function applyReferralCode(req, res) {
     return res.status(500).json({ message: 'Server error applying referral code' });
   }
 }
+
 
 
 

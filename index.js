@@ -5,6 +5,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// CORS
 app.use(
   cors({
     origin: [
@@ -12,23 +13,25 @@ app.use(
       'http://127.0.0.1:3000',
       'https://crowbar-master-site.vercel.app',
       'http://localhost:5173',
-      "https://www.ecoworldbuy.com",
-      "https://www.careduel.com",
-      "https://www.talentkonnect.com",
-      "http://localhost:3001"
+      'https://www.ecoworldbuy.com',
+      'https://www.careduel.com',
+      'https://www.talentkonnect.com',
+      'http://localhost:3001',
     ],
     credentials: true,
   })
 );
 
-// Enhanced logger middleware
+// Logger
 const logger = (req, res, next) => {
-  console.warn(`API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  console.warn(
+    `API HIT: ${req.method} ${req.url} - ${new Date().toISOString()}`
+  );
   next();
 };
-app.use(logger); 
+app.use(logger);
 
-// Stripe webhook route
+// Stripe webhook route (raw body)
 const { handleWebhook } = require('./controllers/stripeController');
 app.post(
   '/api/stripe/webhook',
@@ -44,33 +47,33 @@ app.use('/api/credits', require('./routes/credits'));
 app.use('/api/stripe', require('./routes/stripe'));
 app.use('/api/gate', require('./routes/gate'));
 app.use('/api/bridge', require('./routes/bridge'));
+app.use('/api', require('./routes/upload')); // POST /api/upload
+app.use('/api', require('./routes/user'));  // POST /api/user/update-profile
 
-
-
-// Health check
+// Health check & test
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'Crowbar Credits API running' });
 });
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Crowbar Credits API running' });
-});
+
 app.get('/', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
-// Test route
+
 app.get('/test', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  console.error('Error middleware caught:', err);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// 404 handler 
+// 404 handler
 app.use('*', (req, res) => {
-  console.warn(`404 - NOT FOUND: ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`);
+  console.warn(
+    `404 - NOT FOUND: ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`
+  );
   res.status(404).json({ error: 'Route not found' });
 });
 
