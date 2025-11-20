@@ -176,44 +176,61 @@ const createCheckoutSession = async (req, res) => {
     let productType = 'crowbar_master';
 
     // Handle different tiers and age discount logic
-    if (tier === 'discount19') {
-      // Validate age range for discount tier
-      if (!ageRange || (ageRange !== 'Under 25' && ageRange !== 'Over 60')) {
-        return res.status(400).json({ error: 'Age verification required for discount tier (Under 25 or Over 60)' });
-      }
+  if (tier === 'discount19') {
+  // Check if user is already age verified (pre-verified from frontend)
+  if (ageRange === 'pre_verified') {
+    // User is already KYC verified - skip document validation and apply discount directly
+    const user = await supabase
+      .from('users')
+      .select('age_verified, kyc_status')
+      .eq('email', email)
+      .single();
 
-      // Validate KYC files for discount tier
-      if (!files || !files.id_doc_url || !files.selfie_url || !files.social_url) {
-        return res.status(400).json({ error: 'Government ID, live selfie, and social media link required for discount tier' });
-      }
-
-      // Apply discount and process KYC
-      const { success, discountApplied, error } = await applyAgeDiscount(email, ageRange, files);
-      
-      if (!success) {
-        return res.status(400).json({ error: error || 'Failed to process age verification' });
-      }
-      
-      if (discountApplied) {
-        finalPriceId = process.env.STRIPE_PRICE_DISCOUNT_19; // $19 price for discount
-        console.log(`Discount tier selected for ${email}, using $19 price`);
-      } else {
-        return res.status(400).json({ error: 'Not eligible for discount tier' });
-      }
+    if (user.data?.age_verified && user.data?.kyc_status === 'approved') {
+      finalPriceId = process.env.STRIPE_PRICE_DISCOUNT_19;
+      console.log(`Pre-verified user ${email} accessing discount tier, using $19 price`);
     } else {
-      // Regular tiers without discount logic
-      const priceMap = {
-        'basic': process.env.STRIPE_PRICE_BASIC_49,    // $49 for basic tier
-        'pro': process.env.STRIPE_PRICE_PRO_99,        // $99 for pro tier
-        'elite': process.env.STRIPE_PRICE_ELITE_499    // $499 for elite tier
-      };
-      
-      finalPriceId = priceMap[tier]; // Get price for the selected tier
-      if (!finalPriceId) {
-        return res.status(400).json({ error: 'Invalid tier selected' });
-      }
+      return res.status(400).json({ error: 'User not eligible for discount tier' });
+    }
+  } else {
+    // New user needs to complete age verification
+    // Validate age range for discount tier
+    if (!ageRange || (ageRange !== 'Under 25' && ageRange !== 'Over 60')) {
+      return res.status(400).json({ error: 'Age verification required for discount tier (Under 25 or Over 60)' });
     }
 
+    // Validate KYC files for discount tier
+    if (!files || !files.id_doc_url || !files.selfie_url || !files.social_url) {
+      return res.status(400).json({ error: 'Government ID, live selfie, and social media link required for discount tier' });
+    }
+
+    // Apply discount and process KYC
+    const { success, discountApplied, error } = await applyAgeDiscount(email, ageRange, files);
+    
+    if (!success) {
+      return res.status(400).json({ error: error || 'Failed to process age verification' });
+    }
+    
+    if (discountApplied) {
+      finalPriceId = process.env.STRIPE_PRICE_DISCOUNT_19;
+      console.log(`Discount tier selected for ${email}, using $19 price`);
+    } else {
+      return res.status(400).json({ error: 'Not eligible for discount tier' });
+    }
+  }
+} else {
+  // Regular tiers without discount logic
+  const priceMap = {
+    'basic': process.env.STRIPE_PRICE_BASIC_49,    // $49 for basic tier
+    'pro': process.env.STRIPE_PRICE_PRO_99,        // $99 for pro tier
+    'elite': process.env.STRIPE_PRICE_ELITE_499    // $499 for elite tier
+  };
+  
+  finalPriceId = priceMap[tier];
+  if (!finalPriceId) {
+    return res.status(400).json({ error: 'Invalid tier selected' });
+  }
+}
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
