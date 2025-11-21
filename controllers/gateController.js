@@ -2,9 +2,9 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { supabase } = require('../config/supabase');
 
 const PARTNER_MAP = {
-  talentkonnect: 'https://www.talentkonnect.com',
-  careduel: 'https://www.careduel.com',
-  ecoworldbuy: 'https://www.ecoworldbuy.com/',
+  talentkonnect: 'https://talentkonnect-redesign.vercel.app',
+  careduel: 'https://careduel-redesign.vercel.app',
+  ecoworldbuy: 'https://ecoworldbuy-redesign.vercel.app',
 };
 
 const CREDIT_MAP = {

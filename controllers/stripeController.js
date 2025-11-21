@@ -269,28 +269,27 @@ const createCheckoutSession = async (req, res) => {
 
 
 
-/* ----------------------- Handle Successful Payment ---------------------- */
 const handleSuccessfulPayment = async (session, sourceEventId = null) => {
   try {
     console.log('🔍 START handleSuccessfulPayment');
-    console.log('Session:', session?.id);
+    console.log('Session ID:', session?.id);
     console.log('Source Event ID:', sourceEventId);
     
     const email = normEmail(session?.metadata?.user_email || session?.customer_email);
     if (!email) {
       console.error('❌ No user email on session:', session?.id);
-      return;
+      return { success: false, error: 'No email' };
     }
 
     const sessionId = session?.id;
     const amountCents = Number.isFinite(session?.amount_total) ? session.amount_total : 0;
     const usd = amountCents / 100;
 
-    // 🔍 Tier from metadata (fallback basic)
-    const tier = session?.metadata?.membership_tier || 'null';
-    console.log('📧 Processing payment for:', email, 'Tier:', tier);
+    // Get tier from metadata
+    const tier = session?.metadata?.membership_tier || 'basic';
+    console.log('📧 Processing payment for:', email, 'Tier:', tier, 'Amount:', usd);
 
-    // ✅ Final business rules for Day-1
+    // Tier benefits - ensure credits are integers
     const tierBenefits = {
       discount19: { credits: 49, entries: 1, credit_multiplier: 1.0, membership_tier: 'discount19' },
       basic: { credits: 49, entries: 1, credit_multiplier: 1.0, membership_tier: 'basic' },
@@ -298,52 +297,58 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       elite: { credits: 500, entries: 10, credit_multiplier: 1.5, membership_tier: 'elite', refund_on_event_end: 250 }
     };
 
-    const benefits = tierBenefits[tier] || tierBenefits.basic;
-    console.log('💰 Benefits:', benefits);
+    const safeTier = tierBenefits[tier] ? tier : 'basic';
+    const benefits = tierBenefits[safeTier];
+    
+    // CRITICAL FIX: must be let, NOT const
+    let deltaCredits = Math.floor(benefits?.credits || 49);
 
-    // 🔹 Check if this payment was already processed
-    // 🔹 Check if this payment was already processed (BOTH tables)
-if (sourceEventId) {
-  const { data: existingLedger, error: ledgerCheckError } = await supabase
-    .from('credits_ledger')
-    .select('id')
-    .eq('stripe_event_id', sourceEventId)
-    .maybeSingle();
+    if (deltaCredits <= 0) {
+      console.error('❌ CRITICAL: Invalid delta credits:', deltaCredits, 'using default 49');
+      deltaCredits = 49;
+    }
+    
+    console.log('💰 Benefits:', benefits, 'Delta Credits:', deltaCredits);
 
-  if (existingLedger) {
-    console.log('⚠️ Payment already processed in ledger for event:', sourceEventId);
-    return;
-  }
+    // ----- Existing ledger check -----
+    let existingLedgerRecord = null;
+    if (sourceEventId) {
+      const { data } = await supabase
+        .from('credits_ledger')
+        .select('id, delta, reason, created_at')
+        .eq('stripe_event_id', sourceEventId)
+        .maybeSingle();
+      
+      if (data) {
+        existingLedgerRecord = data;
+        console.log('⚠️ Found existing ledger record:', data);
+      }
+    }
 
-  // Also check credits table to be safe
-  const { data: existingCredit, error: creditCheckError } = await supabase
-    .from('credits')
-    .select('id')
-    .eq('stripe_event_id', sourceEventId)
-    .maybeSingle();
+    if (existingLedgerRecord) {
+      console.log('⏭️ Payment already processed in ledger');
+      
+      const { data: user } = await supabase
+        .from('users')
+        .select('total_credits, membership_tier')
+        .eq('email', email)
+        .single();
+      
+      console.log('👤 User current state:', user);
+      
+      return { success: true, alreadyProcessed: true, existingLedgerId: existingLedgerRecord.id };
+    }
 
-  if (existingCredit) {
-    console.log('⚠️ Payment already processed in credits for event:', sourceEventId);
-    return;
-  }
-}
-
-    // 🔹 Get existing total_credits
-    const { data: existingUser, error: existingErr } = await supabase
+    // ----- Update user -----
+    const { data: existingUser } = await supabase
       .from('users')
-      .select('total_credits')
+      .select('total_credits, total_spent, membership_tier')
       .eq('email', email)
       .maybeSingle();
 
-    if (existingErr) {
-      console.error('❌ Error fetching existing user:', existingErr);
-    }
-
     const prevCredits = existingUser?.total_credits || 0;
-    const newTotalCredits = prevCredits + benefits.credits;
-    console.log('📊 Credits update:', prevCredits, '+', benefits.credits, '=', newTotalCredits);
+    const newTotalCredits = prevCredits + deltaCredits;
 
-    // 🔹 Build user update payload
     const nowIso = new Date().toISOString();
 
     const userUpdate = {
@@ -354,45 +359,33 @@ if (sourceEventId) {
       credit_multiplier: benefits.credit_multiplier,
       total_credits: newTotalCredits,
       updated_at: nowIso,
-      // Elite-specific benefits
       ...(tier === 'elite' && {
         elite_prep_access: true,
         vip_onboarding: true,
         marketplace_priority: true,
         refund_on_event_end: benefits.refund_on_event_end || 250
       }),
-      // Pro-specific benefits
       ...(tier === 'pro' && {
         priority_challenge: true,
         pro_welcome_perk: true
       }),
-      // Access flags
       crowbar_access: true,
       full_access: tier === 'pro' || tier === 'elite'
     };
 
-    console.log('🔄 Updating users table with:', userUpdate);
-
-    // ✅ Use UPSERT so new users also get a row
     const { error: userError } = await supabase
       .from('users')
       .upsert(userUpdate, { onConflict: 'email' });
 
-    if (userError) {
-      console.error('❌ Error upserting user membership:', userError);
-      throw userError;
-    } else {
-      console.log('✅ Users table updated successfully');
-    }
+    if (userError) throw userError;
 
-    // 🔹 Track spend separately
+    // ----- Track spend -----
     await bumpUserSpend(email, usd);
 
-    // 🔹 Create payment record in CREDITS table
-    console.log('🔄 Inserting into CREDITS table...');
+    // ----- Insert into CREDITS -----
     const creditsData = {
       email: email,
-      amount: benefits.credits,
+      amount: deltaCredits,
       origin_site: 'stripe_payment',
       stripe_event_id: sourceEventId,
       stripe_session_id: sessionId,
@@ -401,75 +394,63 @@ if (sourceEventId) {
       created_at: nowIso
     };
     
-    console.log('📝 Credits insert data:', creditsData);
-    
-    const { data: creditsResult, error: creditsError } = await supabase
-      .from('credits')
-      .insert(creditsData)
-      .select();
+    await supabase.from('credits').insert(creditsData);
 
-    if (creditsError) {
-      console.error('❌ CREDITS table insert failed:', creditsError);
-      console.error('❌ Error details:', {
-        code: creditsError.code,
-        message: creditsError.message,
-        details: creditsError.details,
-        hint: creditsError.hint
-      });
-    } else {
-      console.log('✅ CREDITS table insert successful:', creditsResult);
-    }
-
-    // 🔹 Create payment record in CREDITS_LEDGER table
-    console.log('🔄 Inserting into CREDITS_LEDGER table...');
+    // ----- Insert into CREDITS_LEDGER (THIS WAS FAILING) -----
     const ledgerData = {
       email: email,
       stripe_session_id: sessionId,
       amount_usd: usd,
-      delta: benefits.credits,
+      delta: deltaCredits,
       reason: `membership_purchase_${tier}`,
-      membership_tier: benefits.membership_tier,
-      product_type: session?.metadata?.product_type,
+      origin_site: 'stripe_payment',
       stripe_event_id: sourceEventId,
       created_at: nowIso
     };
-    
-    console.log('📝 Ledger insert data:', ledgerData);
-    
+
+    console.log("🟦 Ledger Insert Payload:", ledgerData);
+    console.log("🔥 BEFORE INSERT — delta:", deltaCredits, "usd:", usd, "reason:", `membership_purchase_${tier}`);
+
+
     const { data: ledgerResult, error: ledgerError } = await supabase
       .from('credits_ledger')
-      .insert(ledgerData)
-      .select();
+      .insert(ledgerData);
+      
 
     if (ledgerError) {
-      console.error('❌ CREDITS_LEDGER table insert failed:', ledgerError);
-      console.error('❌ Error details:', {
-        code: ledgerError.code,
-        message: ledgerError.message,
-        details: ledgerError.details,
-        hint: ledgerError.hint
-      });
-    } else {
-      console.log('✅ CREDITS_LEDGER table insert successful:', ledgerResult);
-    }
+  console.error('❌ CREDITS_LEDGER insert FAILED:', ledgerError);
 
-    // 🔹 Ensure referral code exists for this user
+  if (ledgerError.code !== '23505') {
+    throw ledgerError;
+  }
+
+  console.log("ℹ️ Duplicate stripe_event_id ignored");
+}
+
+    // ----- Referral code -----
     try {
-      const code = await ensureReferralCodeForUser(supabase, email);
-      console.log(`🔗 Referral code for ${email}: ${code}`);
-    } catch (refErr) {
-      console.error('❌ Referral code error:', refErr);
-    }
+      await ensureReferralCodeForUser(supabase, email);
+    } catch {}
 
-    console.log(`🎉 Payment processing completed for ${email}`);
+    return {
+      success: true,
+      ledgerInserted: true,
+      creditsInserted: true,
+      email,
+      tier,
+      deltaCredits,
+      ledgerId: ledgerResult?.[0]?.id
+    };
     
   } catch (error) {
-    console.error('❌ Payment handling error:', error);
-    console.error('❌ Stack trace:', error.stack);
+    console.error('❌ Payment handling ERROR:', error);
+    return { success: false, error: error.message };
   }
 };
 
 
+
+/* ----------------------------- Webhook --------------------------------- */
 /* ----------------------------- Webhook --------------------------------- */
 const handleWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -484,14 +465,49 @@ const handleWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Immediately respond to Stripe to prevent timeouts
+  res.json({ 
+    received: true, 
+    status: 'processing', 
+    event_id: event.id,
+    event_type: event.type 
+  });
+
+  // Process the webhook asynchronously
+  processWebhookEvent(event).catch(error => {
+    console.error('❌ Async webhook processing failed:', error);
+  });
+};
+
+/* --------------------------- Async Webhook Processor --------------------------- */
+const processWebhookEvent = async (event) => {
   try {
+    console.log('🔄 Processing webhook event asynchronously:', event.type, event.id);
+
     switch (event.type) {
       case 'checkout.session.completed':
         const session = event.data.object;
-        console.log(`💰 Checkout session completed: ${session.id}, Tier: ${session.metadata?.membership_tier}, Amount: $${(session.amount_total / 100).toFixed(2)}`);
+        console.log('💰 Checkout session completed:', {
+          session_id: session.id,
+          payment_status: session.payment_status,
+          tier: session.metadata?.membership_tier,
+          amount: `$${(session.amount_total / 100).toFixed(2)}`,
+          email: session.customer_email,
+          event_id: event.id
+        });
         
         if (session.payment_status === 'paid') {
-          await handleSuccessfulPayment(session, event.id);
+          console.log('🎯 Calling handleSuccessfulPayment for paid session...');
+          const result = await handleSuccessfulPayment(session, event.id);
+          console.log('📝 Payment processing completed with result:', result);
+          
+          // Log specifically about ledger insertion
+          if (result.ledgerInserted) {
+            console.log('✅ SUCCESS: Ledger record was inserted');
+          } else {
+            console.log('❌ FAILED: Ledger record was NOT inserted');
+            console.log('🔍 Result details:', result);
+          }
         } else {
           console.log(`ℹ️ Session ${session.id} not paid, status: ${session.payment_status}`);
         }
@@ -501,23 +517,22 @@ const handleWebhook = async (req, res) => {
         console.log(`❌ Checkout session expired: ${event.data.object.id}`);
         break;
         
+      case 'payment_intent.succeeded':
+        console.log('💳 Payment intent succeeded:', event.data.object.id);
+        break;
+        
       default:
         console.log(`⚙️ Unhandled event type: ${event.type}`);
     }
 
     console.log('✅ Webhook processing completed for event:', event.id);
-    res.json({ 
-      received: true, 
-      status: 'processed', 
-      event_id: event.id,
-      event_type: event.type 
-    });
     
   } catch (err) {
-    console.error('❌ Webhook handler error:', err);
-    res.status(500).json({ 
-      error: 'Webhook handler error',
-      details: err.message 
+    console.error('❌ Webhook processor error:', err);
+    console.error('❌ Error details:', {
+      message: err.message,
+      stack: err.stack,
+      event_id: event.id
     });
   }
 };
