@@ -268,14 +268,17 @@ const createCheckoutSession = async (req, res) => {
 };
 
 
-/* ----------------------- Handle Successful Payment ---------------------- */
-/* ----------------------- Handle Successful Payment ---------------------- */
+
 /* ----------------------- Handle Successful Payment ---------------------- */
 const handleSuccessfulPayment = async (session, sourceEventId = null) => {
   try {
+    console.log('🔍 START handleSuccessfulPayment');
+    console.log('Session:', session?.id);
+    console.log('Source Event ID:', sourceEventId);
+    
     const email = normEmail(session?.metadata?.user_email || session?.customer_email);
     if (!email) {
-      console.error('No user email on session:', session?.id);
+      console.error('❌ No user email on session:', session?.id);
       return;
     }
 
@@ -284,47 +287,48 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     const usd = amountCents / 100;
 
     // 🔍 Tier from metadata (fallback basic)
-    const tier = session?.metadata?.membership_tier || 'basic';
+    const tier = session?.metadata?.membership_tier || 'null';
+    console.log('📧 Processing payment for:', email, 'Tier:', tier);
 
     // ✅ Final business rules for Day-1
     const tierBenefits = {
-      discount19: {
-        credits: 49,
-        entries: 1,
-        credit_multiplier: 1.0,
-        membership_tier: 'discount19'
-      },
-      basic: {
-        credits: 49,
-        entries: 1,
-        credit_multiplier: 1.0,
-        membership_tier: 'basic'
-      },
-      pro: {
-        credits: 49,
-        entries: 3,
-        credit_multiplier: 1.5,
-        membership_tier: 'pro'
-      },
-      elite: {
-        credits: 500,   // 🔴 Elite gets 500 credits
-        entries: 10,
-        credit_multiplier: 1.5,
-        membership_tier: 'elite',
-        refund_on_event_end: 250
-      }
+      discount19: { credits: 49, entries: 1, credit_multiplier: 1.0, membership_tier: 'discount19' },
+      basic: { credits: 49, entries: 1, credit_multiplier: 1.0, membership_tier: 'basic' },
+      pro: { credits: 49, entries: 3, credit_multiplier: 1.5, membership_tier: 'pro' },
+      elite: { credits: 500, entries: 10, credit_multiplier: 1.5, membership_tier: 'elite', refund_on_event_end: 250 }
     };
 
     const benefits = tierBenefits[tier] || tierBenefits.basic;
+    console.log('💰 Benefits:', benefits);
 
-    console.log('💳 handleSuccessfulPayment:', {
-      email,
-      tier,
-      benefits,
-      amountUsd: usd
-    });
+    // 🔹 Check if this payment was already processed
+    // 🔹 Check if this payment was already processed (BOTH tables)
+if (sourceEventId) {
+  const { data: existingLedger, error: ledgerCheckError } = await supabase
+    .from('credits_ledger')
+    .select('id')
+    .eq('stripe_event_id', sourceEventId)
+    .maybeSingle();
 
-    // 🔹 Get existing total_credits (so we can add new benefits)
+  if (existingLedger) {
+    console.log('⚠️ Payment already processed in ledger for event:', sourceEventId);
+    return;
+  }
+
+  // Also check credits table to be safe
+  const { data: existingCredit, error: creditCheckError } = await supabase
+    .from('credits')
+    .select('id')
+    .eq('stripe_event_id', sourceEventId)
+    .maybeSingle();
+
+  if (existingCredit) {
+    console.log('⚠️ Payment already processed in credits for event:', sourceEventId);
+    return;
+  }
+}
+
+    // 🔹 Get existing total_credits
     const { data: existingUser, error: existingErr } = await supabase
       .from('users')
       .select('total_credits')
@@ -332,11 +336,12 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       .maybeSingle();
 
     if (existingErr) {
-      console.error('Error fetching existing user for credits:', existingErr);
+      console.error('❌ Error fetching existing user:', existingErr);
     }
 
     const prevCredits = existingUser?.total_credits || 0;
     const newTotalCredits = prevCredits + benefits.credits;
+    console.log('📊 Credits update:', prevCredits, '+', benefits.credits, '=', newTotalCredits);
 
     // 🔹 Build user update payload
     const nowIso = new Date().toISOString();
@@ -349,22 +354,24 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       credit_multiplier: benefits.credit_multiplier,
       total_credits: newTotalCredits,
       updated_at: nowIso,
-      // Elite-specific benefits (UI placeholders)
+      // Elite-specific benefits
       ...(tier === 'elite' && {
         elite_prep_access: true,
         vip_onboarding: true,
         marketplace_priority: true,
         refund_on_event_end: benefits.refund_on_event_end || 250
       }),
-      // Pro-specific benefits (UI placeholders)
+      // Pro-specific benefits
       ...(tier === 'pro' && {
         priority_challenge: true,
         pro_welcome_perk: true
       }),
-      // Access flags (optional but useful for Day-1)
+      // Access flags
       crowbar_access: true,
       full_access: tier === 'pro' || tier === 'elite'
     };
+
+    console.log('🔄 Updating users table with:', userUpdate);
 
     // ✅ Use UPSERT so new users also get a row
     const { error: userError } = await supabase
@@ -372,55 +379,95 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       .upsert(userUpdate, { onConflict: 'email' });
 
     if (userError) {
-      console.error('Error upserting user membership:', userError);
+      console.error('❌ Error upserting user membership:', userError);
       throw userError;
+    } else {
+      console.log('✅ Users table updated successfully');
     }
 
     // 🔹 Track spend separately
     await bumpUserSpend(email, usd);
 
-    // 🔹 Create payment record
-    const { error: paymentError } = await supabase
-      .from('credits_ledger')
-      .insert({
-        email: email,
-        stripe_session_id: sessionId,
-        amount_usd: usd,
-        delta: benefits.credits,
-        reason: benefits.entries,
-        membership_tier: benefits.membership_tier,
-        product_type: session?.metadata?.product_type,
-        stripe_event_id: sourceEventId,
-        created_at: nowIso
-      });
+    // 🔹 Create payment record in CREDITS table
+    console.log('🔄 Inserting into CREDITS table...');
+    const creditsData = {
+      email: email,
+      amount: benefits.credits,
+      origin_site: 'stripe_payment',
+      stripe_event_id: sourceEventId,
+      stripe_session_id: sessionId,
+      eligible_global_race: true,
+      legal_accept: true,
+      created_at: nowIso
+    };
+    
+    console.log('📝 Credits insert data:', creditsData);
+    
+    const { data: creditsResult, error: creditsError } = await supabase
+      .from('credits')
+      .insert(creditsData)
+      .select();
 
-    if (paymentError) {
-      console.error('Error creating payment record:', paymentError);
+    if (creditsError) {
+      console.error('❌ CREDITS table insert failed:', creditsError);
+      console.error('❌ Error details:', {
+        code: creditsError.code,
+        message: creditsError.message,
+        details: creditsError.details,
+        hint: creditsError.hint
+      });
+    } else {
+      console.log('✅ CREDITS table insert successful:', creditsResult);
+    }
+
+    // 🔹 Create payment record in CREDITS_LEDGER table
+    console.log('🔄 Inserting into CREDITS_LEDGER table...');
+    const ledgerData = {
+      email: email,
+      stripe_session_id: sessionId,
+      amount_usd: usd,
+      delta: benefits.credits,
+      reason: `membership_purchase_${tier}`,
+      membership_tier: benefits.membership_tier,
+      product_type: session?.metadata?.product_type,
+      stripe_event_id: sourceEventId,
+      created_at: nowIso
+    };
+    
+    console.log('📝 Ledger insert data:', ledgerData);
+    
+    const { data: ledgerResult, error: ledgerError } = await supabase
+      .from('credits_ledger')
+      .insert(ledgerData)
+      .select();
+
+    if (ledgerError) {
+      console.error('❌ CREDITS_LEDGER table insert failed:', ledgerError);
+      console.error('❌ Error details:', {
+        code: ledgerError.code,
+        message: ledgerError.message,
+        details: ledgerError.details,
+        hint: ledgerError.hint
+      });
+    } else {
+      console.log('✅ CREDITS_LEDGER table insert successful:', ledgerResult);
     }
 
     // 🔹 Ensure referral code exists for this user
     try {
       const code = await ensureReferralCodeForUser(supabase, email);
-      console.log(`Referral code for ${email}: ${code}`);
+      console.log(`🔗 Referral code for ${email}: ${code}`);
     } catch (refErr) {
-      console.error('Error generating referral code for user:', refErr);
+      console.error('❌ Referral code error:', refErr);
     }
 
-    // Optional: log final success per tier
-    const tierMessages = {
-      elite: `🎉 ELITE membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      pro: `⭐ PRO membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      basic: `✅ BASIC membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`,
-      discount19: `🎯 DISCOUNT membership activated for ${email}! +${benefits.credits} credits, ${benefits.entries} entries, $${usd} paid`
-    };
-
-    console.log(tierMessages[tier] || tierMessages.basic);
-    console.log(`📧 Welcome email should be triggered for ${email}`);
+    console.log(`🎉 Payment processing completed for ${email}`);
+    
   } catch (error) {
     console.error('❌ Payment handling error:', error);
+    console.error('❌ Stack trace:', error.stack);
   }
 };
-
 
 
 /* ----------------------------- Webhook --------------------------------- */
