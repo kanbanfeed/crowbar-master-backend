@@ -31,15 +31,21 @@ const logger = (req, res, next) => {
 };
 app.use(logger);
 
-// Stripe webhook route (raw body)
-const { handleWebhook } = require('./controllers/stripeController');
-app.post(
-  '/api/stripe/webhook',
-  express.raw({ type: 'application/json' }),
-  handleWebhook
-);
+/* -----------------------------------------
+   ⚠️ STRIPE WEBHOOK RAW BODY (MUST COME BEFORE JSON)
+------------------------------------------ */
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
-// JSON parser for all other routes
+const { handleWebhook } = require('./controllers/stripeController');
+
+/* -----------------------------------------
+   📌 Register Webhook Route (REQUIRED!)
+------------------------------------------ */
+app.post('/api/stripe/webhook', handleWebhook);
+
+/* -----------------------------------------
+   🔥 JSON parser for ALL OTHER routes
+------------------------------------------ */
 app.use(express.json());
 
 // Routes
@@ -47,8 +53,8 @@ app.use('/api/credits', require('./routes/credits'));
 app.use('/api/stripe', require('./routes/stripe'));
 app.use('/api/gate', require('./routes/gate'));
 app.use('/api/bridge', require('./routes/bridge'));
-app.use('/api', require('./routes/upload')); // POST /api/upload
-app.use('/api', require('./routes/user'));  // POST /api/user/update-profile
+app.use('/api', require('./routes/upload')); 
+app.use('/api', require('./routes/user'));  
 
 // Health check & test
 app.get('/health', (req, res) => {
@@ -63,13 +69,13 @@ app.get('/test', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Error middleware caught:', err);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// 404 handler
+// 404
 app.use('*', (req, res) => {
   console.warn(
     `404 - NOT FOUND: ${req.method} ${req.originalUrl} - ${new Date().toISOString()}`
