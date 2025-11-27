@@ -17,6 +17,7 @@ app.use(
       'https://www.careduel.com',
       'https://www.talentkonnect.com',
       'http://localhost:3001',
+      'https://www.crowbarltd.com',
     ],
     credentials: true,
   })
