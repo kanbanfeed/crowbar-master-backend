@@ -6,38 +6,59 @@ async function ensureUser(email) {
     .upsert([{ email }], { onConflict: 'email' })
     .select()
     .single();
-  if (error) console.error('ensureUser error:', error);
+  if (error) {
+  console.error('ensureUser error:', error);
+  throw error;
+}
   return data;
 }
 
 // Helper function to update user total credits
 async function bumpUserCredits(email, deltaCredits) {
   await ensureUser(email);
+
   const { data: curr, error: selErr } = await supabase
     .from('users')
     .select('total_credits')
     .eq('email', email)
-    .single();
-  if (selErr) console.error('select user total_credits error:', selErr);
+     .maybeSingle();
 
-  const newTotal = (curr?.total_credits || 0) + deltaCredits;
+  if (selErr) {
+  console.error('select user total_credits error:', selErr);
+  throw selErr; // ✅ stop here so you see the real issue
+}
+
+  // ✅ ADD THESE TWO LINES HERE (replace old newTotal line)
+  const safeDelta = Number(deltaCredits) || 0;
+  const newTotal = (curr?.total_credits || 0) + safeDelta;
+
   const { error: updErr } = await supabase
     .from('users')
     .update({ total_credits: newTotal, updated_at: new Date().toISOString() })
     .eq('email', email);
-  if (updErr) console.error('update user credits error:', updErr);
+
+  if (updErr) {
+  console.error('update user credits error:', updErr);
+  throw updErr;
+}
+
   return newTotal;
 }
+
 
 // Earn credits
 const earnCredits = async (req, res) => {
   try {
     const { email, amount, origin } = req.body;
-    if (!email || !amount || !origin) {
+    if (!email || amount === undefined || amount === null || !origin) {
       return res.status(400).json({ error: 'Email, amount, and origin are required' });
     }
 
-    const delta = parseInt(amount);
+    const delta = parseInt(amount, 10);
+if (!Number.isFinite(delta)) {
+  return res.status(400).json({ error: 'amount must be a valid integer' });
+}
+
     const eligible_global_race = origin === 'access_pass';
 
     // Insert row-level record
@@ -56,8 +77,7 @@ const earnCredits = async (req, res) => {
       .insert([{
         email, delta, reason: 'api.earn', origin_site: origin
       }]);
-    if (ledgerErr) console.error('ledger insert error:', ledgerErr);
-
+    if (ledgerErr) return res.status(400).json({ error: ledgerErr.message, where: 'credits_ledger.insert' });
     // Update total credits
     const newTotal = await bumpUserCredits(email, delta);
 
@@ -101,10 +121,15 @@ const getBalance = async (req, res) => {
 const spendCredits = async (req, res) => {
   try {
     const { email, amount, origin } = req.body;
-    if (!email || !amount) {
+    if (!email || amount === undefined || amount === null) {
       return res.status(400).json({ error: 'Email and amount are required' });
     }
-    const delta = -Math.abs(parseInt(amount));
+
+    const parsed = parseInt(amount, 10);
+if (!Number.isFinite(parsed)) {
+  return res.status(400).json({ error: 'amount must be a valid integer' });
+}
+    const delta = -Math.abs(parsed);
     const origin_site = origin || 'spend';
 
     // Insert into credits table
@@ -117,7 +142,7 @@ const spendCredits = async (req, res) => {
     const { error: ledgerErr } = await supabase
       .from('credits_ledger')
       .insert([{ email, delta, reason: 'api.spend', origin_site }]);
-    if (ledgerErr) console.error('ledger insert error:', ledgerErr);
+    if (ledgerErr) return res.status(400).json({ error: ledgerErr.message, where: 'credits_ledger.insert' });
 
     // Update total credits
     const newTotal = await bumpUserCredits(email, delta);
