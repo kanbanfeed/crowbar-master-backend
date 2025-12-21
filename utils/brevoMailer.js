@@ -41,10 +41,14 @@ function buildCreditUpdateEmail({
 }) {
   const r = String(reason || "").toLowerCase();
   const reasonLabel =
-    r.includes("refund") ? "Refund Processed" :
-    r.includes("membership_purchase") || r.includes("payment") ? "Payment Successful" :
-    r.includes("gain") ? "Credits Added" :
-    "Credits Updated";
+  r.includes("refund") ? "Refund Processed" :
+  r.includes("limited_pass") ? "Limited Pass Purchase" :
+  r.includes("balance_upgrade") ? "Balance Upgrade Payment" :
+  r.includes("membership_") || r.includes("membership_purchase") ? "Membership Purchase" :
+  r.includes("payment") ? "Payment Successful" :
+  r.includes("gain") ? "Credits Added" :
+  "Credits Updated";
+
 
   const subject = `Crowbar Credit Update: ${reasonLabel}`;
   const deltaText = Number(delta) > 0 ? `+${delta}` : String(delta);

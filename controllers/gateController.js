@@ -2,9 +2,9 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { supabase } = require('../config/supabase');
 
 const PARTNER_MAP = {
-  talentkonnect: 'https://talentkonnect-redesign.vercel.app',
-  careduel: 'https://careduel-redesign.vercel.app',
-  ecoworldbuy: 'https://ecoworldbuy-redesign.vercel.app',
+  talentkonnect: 'https://www.talentkonnect.com',
+  careduel: 'https://www.careduel.com',
+  ecoworldbuy: 'https://www.ecoworldbuy.com',
 };
 
 const CREDIT_MAP = {
@@ -71,14 +71,13 @@ async function bumpUserSpend(email, deltaUsd) {
 }
 
 async function hasAccessPass(email) {
-  // Has any credited Access Pass with legal_accept recorded
   const { data, error } = await supabase
     .from('credits')
     .select('id')
     .eq('email', email)
     .eq('origin_site', 'access_pass')
-    .eq('legal_accept', true)
     .limit(1);
+
   if (error) {
     console.error('hasAccessPass error:', error);
     return false;
@@ -109,7 +108,7 @@ async function partnerRewardAlreadyGivenToday(email, origin) {
     .limit(1);
   if (error) {
     console.error('reward check error:', error);
-    return true; 
+    return false; 
   }
   return (data || []).length > 0;
 }
@@ -247,7 +246,7 @@ const startGate = async (req, res) => {
 
     return res.json({
       success: true,
-      need_payment: true,
+      // need_payment: true,
       checkout_url: session.url,
       sessionId: session.id,
     });
@@ -301,15 +300,15 @@ const completeGate = async (req, res) => {
     }
 
     if (!session_id && bodyEmail && origin) {
-      console.log('[gate.complete] no session_id; checking existing access for', bodyEmail, origin);
-      const pass = await hasAccessPass(bodyEmail);
-      if (!pass) {
-        return res.status(400).json({ success: false, error: 'access_pass_required' });
-      }
-      await awardPartnerOncePerDay(bodyEmail, origin);
-      const redirect_url = PARTNER_MAP[return_to || origin] || '/';
-      return res.json({ success: true, redirect_url });
-    }
+  console.log('[gate.complete] no session_id; awarding partner once/day for', bodyEmail, origin);
+
+  // ✅ award partner credits once per day
+  await awardPartnerOncePerDay(bodyEmail, origin);
+
+  // ✅ always redirect to selected partner (or return_to)
+  const redirect_url = PARTNER_MAP[return_to || origin] || PARTNER_MAP[origin] || '/';
+  return res.json({ success: true, redirect_url });
+}
 
     return res.status(400).json({
       success: false,
