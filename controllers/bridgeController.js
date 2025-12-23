@@ -60,8 +60,7 @@ async function bumpUserSpend(email, deltaUsd) {
   return newSpent;
 }
 
-// NOTE: keeping auto-upgrade logic minimal here.
-// If you already have a richer version in stripeController, you can import/reuse it.
+
 async function autoUpgradeIfEligible(email) {
   try {
     // rolling 30-day from credits_ledger
@@ -254,7 +253,7 @@ const syncCheckout = async (req, res) => {
           email,
           amount: credits_delta,
           origin_site: source,
-          eligible_global_race: false,     // up to your business rule
+          eligible_global_race: false,     
           legal_accept: true,
           stripe_event_id: null,
           stripe_session_id,

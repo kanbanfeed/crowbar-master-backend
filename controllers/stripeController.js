@@ -182,7 +182,7 @@ const createCheckoutSession = async (req, res) => {
     let finalPriceId;
     let productType = 'crowbar_master';
 
-    // Default metadata (we will override based on mode)
+    // Default metadata
     let sessionMetadata = {
       user_email: normEmail(email),
       product_type: productType,
@@ -248,9 +248,9 @@ const createCheckoutSession = async (req, res) => {
     return res.status(400).json({ error: `Invalid limited_paid_amount (${paidTotal}). Expected 1..48.` });
   }
 
-  const balance = 49 - paidTotal; // ✅ e.g., 49 - 14 = 35
+  const balance = 49 - paidTotal; // e.g., 49 - 14 = 35
 
-  // ✅ Metadata for webhook
+  // Metadata for webhook
   sessionMetadata = {
     user_email: normEmail(email),
     product_type: productType,
@@ -259,7 +259,7 @@ const createCheckoutSession = async (req, res) => {
     upgrade_target_amount: '49',
   };
 
-  // ✅ Create Stripe session with dynamic amount (no Stripe Price IDs needed)
+  // Create Stripe session with dynamic amount (no Stripe Price IDs needed)
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
@@ -300,13 +300,12 @@ const createCheckoutSession = async (req, res) => {
 
     // -------------------- EXISTING FLOW: LIFETIME MEMBERSHIP --------------------
     else {
-      // ✅ Validate tier ONLY for lifetime purchases
+      // Validate tier ONLY for lifetime purchases
       const validTiers = ['discount19', 'basic', 'pro', 'elite'];
       if (!tier || !validTiers.includes(tier)) {
         return res.status(400).json({ error: 'Valid tier is required: discount19, basic, pro, or elite' });
       }
 
-      // ✅ KEEP your existing pricing logic unchanged (just inside lifetime block)
       if (tier === 'discount19') {
         if (ageRange === 'pre_verified') {
           const user = await supabase
@@ -356,7 +355,6 @@ const createCheckoutSession = async (req, res) => {
       }
       }
 
-      // keep old metadata shape + add payment_type for webhook
       sessionMetadata = {
         user_email: normEmail(email),
         product_type: productType,
@@ -376,7 +374,7 @@ const createCheckoutSession = async (req, res) => {
   tier,
   finalPriceId,
 });
-    // Create Stripe checkout session (unchanged except metadata variable)
+    // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{ price: finalPriceId, quantity: 1 }],
@@ -413,13 +411,13 @@ const createCheckoutSession = async (req, res) => {
 
 const handleSuccessfulPayment = async (session, sourceEventId = null) => {
   try {
-    console.log('🔍 START handleSuccessfulPayment');
+    console.log(' START handleSuccessfulPayment');
     console.log('Session ID:', session?.id);
     console.log('Source Event ID:', sourceEventId);
 
     const email = normEmail(session?.metadata?.user_email || session?.customer_email);
     if (!email) {
-      console.error('❌ No user email on session:', session?.id);
+      console.error(' No user email on session:', session?.id);
       return { success: false, error: 'No email' };
     }
 
@@ -427,9 +425,9 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     const amountCents = Number.isFinite(session?.amount_total) ? session.amount_total : 0;
     const usd = amountCents / 100;
 
-    // ✅ NEW: payment type (does NOT affect old flows)
+    // NEW: payment type (does NOT affect old flows)
     const paymentType = session?.metadata?.payment_type || 'lifetime_purchase';
-    console.log('🧾 paymentType:', paymentType);
+    console.log('paymentType:', paymentType);
 
     // ----- Existing ledger check (keep) -----
     let existingLedgerRecord = null;
@@ -442,12 +440,12 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
 
       if (data) {
         existingLedgerRecord = data;
-        console.log('⚠️ Found existing ledger record:', data);
+        console.log(' Found existing ledger record:', data);
       }
     }
 
     if (existingLedgerRecord) {
-      console.log('⏭️ Payment already processed in ledger');
+      console.log(' Payment already processed in ledger');
 
       const { data: user } = await supabase
         .from('users')
@@ -461,7 +459,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
     }
 
     // =========================
-    // ✅ NEW FLOW A: LIMITED PASS
+    // NEW FLOW A: LIMITED PASS
     // =========================
     if (paymentType === 'limited_pass') {
       const partnerKey = session?.metadata?.partner_key;
@@ -473,7 +471,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       const nowIso = new Date().toISOString();
       await ensureUser(email);
 
-      // ✅ read current user state so we can ADD instead of overwrite
+      // read current user state so we can ADD instead of overwrite
       const { data: existing, error: readErr } = await supabase
         .from('users')
         .select(
@@ -487,16 +485,15 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       const prevTotalPaid = Number(existing?.limited_paid_amount || 0);
       const newTotalPaid = prevTotalPaid + paidAmount;
 
-      // ✅ upgrade balance based on TOTAL (not just last payment)
+      // upgrade balance based on TOTAL 
       const upgradeBalance = Math.max(49 - newTotalPaid, 0);
 
-      // ✅ store multiple partners in CSV (no DB change needed)
+      // store multiple partners in CSV (no DB change needed)
       const prevPartners = String(existing?.limited_partner || '').trim();
       const prevList = prevPartners ? prevPartners.split(',').map(s => s.trim()).filter(Boolean) : [];
       const merged = Array.from(new Set([...prevList, partnerKey]));
       const mergedCsv = merged.join(',');
 
-      // ✅ partner flags should be additive (OR)
       const accessTalent = Boolean(existing?.access_talentkonnect) || partnerKey === 'talentkonnect';
       const accessCare = Boolean(existing?.access_careduel) || partnerKey === 'careduel';
       const accessEco = Boolean(existing?.access_ecoworldbuy) || partnerKey === 'ecoworldbuy';
@@ -505,8 +502,8 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
         email,
         access_mode: 'limited',
         limited_partner: mergedCsv,
-        limited_paid_amount: newTotalPaid,      // ✅ now total
-        upgrade_balance_amount: upgradeBalance, // ✅ remaining
+        limited_paid_amount: newTotalPaid,      // now total
+        upgrade_balance_amount: upgradeBalance, // remaining
         crowbar_access: true,
         full_access: false,
         updated_at: nowIso,
@@ -524,7 +521,7 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
 
       await bumpUserSpend(email, usd);
 
-      // ✅ ledger delta=0
+      // ledger delta=0
       const ledgerData = {
         email,
         stripe_session_id: sessionId,
@@ -541,11 +538,11 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
         .insert(ledgerData);
 
       if (ledgerError) {
-        console.error('❌ LIMITED PASS credits_ledger insert FAILED:', ledgerError);
+        console.error(' LIMITED PASS credits_ledger insert FAILED:', ledgerError);
         if (ledgerError.code !== '23505') throw ledgerError;
       }
 
-      // ✅ credits history row amount=0
+      // credits history row amount=0
       const creditsData = {
         email,
         amount: 0,
@@ -558,39 +555,38 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       };
 
       const { error: creditsError } = await supabase.from('credits').insert(creditsData);
-      if (creditsError) console.error('❌ LIMITED PASS credits insert FAILED:', creditsError);
+      if (creditsError) console.error(' LIMITED PASS credits insert FAILED:', creditsError);
 
       try { await ensureReferralCodeForUser(supabase, email); } catch {}
 
-      // ✅ Send email for LIMITED PASS purchase (delta credits = 0)
-// ✅ Send email for LIMITED PASS purchase (delta credits = 0)
-try {
-  const userName = await getUserName(email);
+      // Send email for LIMITED PASS purchase (delta credits = 0)
+      try {
+        const userName = await getUserName(email);
 
-  const { data: u } = await supabase
-    .from("users")
-    .select("total_credits")
-    .eq("email", email)
-    .maybeSingle();
+        const { data: u } = await supabase
+          .from("users")
+          .select("total_credits")
+          .eq("email", email)
+          .maybeSingle();
 
-  const newBalance = u?.total_credits || 0;
+        const newBalance = u?.total_credits || 0;
 
-  await sendCreditActivityEmail({
-    email,
-    userName,
-    reason: `limited_pass_${partnerKey}_$${paidAmount}`,
-    delta: 0,
-    newBalance,
-    amountUsd: usd,
-    originSite: "stripe_payment",
-    occurredAt: nowIso,
-    ledgerId: null,
-    stripeEventId: sourceEventId,
-    stripeSessionId: sessionId,
-  });
-} catch (e) {
-  console.error("Limited pass email failed:", e?.message || e);
-}
+        await sendCreditActivityEmail({
+          email,
+          userName,
+          reason: `limited_pass_${partnerKey}_$${paidAmount}`,
+          delta: 0,
+          newBalance,
+          amountUsd: usd,
+          originSite: "stripe_payment",
+          occurredAt: nowIso,
+          ledgerId: null,
+          stripeEventId: sourceEventId,
+          stripeSessionId: sessionId,
+        });
+      } catch (e) {
+        console.error("Limited pass email failed:", e?.message || e);
+      }
 
 
       return {
@@ -604,13 +600,12 @@ try {
     }
 
     // =================================
-    // ✅ NEW FLOW B: BALANCE UPGRADE
+    // NEW FLOW B: BALANCE UPGRADE
     // =================================
-    // We will continue with your existing lifetime logic by forcing tier='basic'
     let tier = session?.metadata?.membership_tier || 'basic';
 
     if (paymentType === 'balance_upgrade') {
-      // ✅ Force to basic so we use the same membership logic
+      // Force to basic so we use the same membership logic
       tier = 'basic';
 
       const { data: user, error } = await supabase
@@ -644,11 +639,10 @@ try {
     }
 
     // --------------------------
-    // ✅ YOUR EXISTING CODE BELOW
-    // (we keep all logic; only adjust credits math for balance_upgrade so final total becomes 49)
+    // YOUR EXISTING CODE BELOW
     // --------------------------
 
-    console.log('📧 Processing payment for:', email, 'Tier:', tier, 'Amount:', usd);
+    console.log(' Processing payment for:', email, 'Tier:', tier, 'Amount:', usd);
 
     const tierBenefits = {
       discount19: { credits: 49, entries: 1, credit_multiplier: 1.0, membership_tier: 'discount19' },
@@ -663,11 +657,11 @@ try {
     let deltaCredits = Math.floor(benefits?.credits || 49);
 
     if (deltaCredits <= 0) {
-      console.error('❌ CRITICAL: Invalid delta credits:', deltaCredits, 'using default 49');
+      console.error(' CRITICAL: Invalid delta credits:', deltaCredits, 'using default 49');
       deltaCredits = 49;
     }
 
-    console.log('💰 Benefits:', benefits, 'Delta Credits:', deltaCredits);
+    console.log(' Benefits:', benefits, 'Delta Credits:', deltaCredits);
 
     // ----- Update user -----
     const { data: existingUser } = await supabase
@@ -678,10 +672,10 @@ try {
 
     const prevCredits = existingUser?.total_credits || 0;
 
-    // ✅ DEFAULT behavior (lifetime purchase): add credits
+    // DEFAULT behavior (lifetime purchase): add credits
     let newTotalCredits = prevCredits + deltaCredits;
 
-    // ✅ REQUIRED FIX: for balance upgrade, final total_credits must become 49 (not add 49)
+    // REQUIRED FIX: for balance upgrade, final total_credits must become 49 (not add 49)
     if (paymentType === 'balance_upgrade') {
       const targetCredits = 49;
 
@@ -691,7 +685,7 @@ try {
       // final total should be exactly at least 49 (don’t reduce if somehow higher)
       newTotalCredits = Math.max(prevCredits, targetCredits);
 
-      console.log('🟩 BALANCE UPGRADE credits adjustment:', {
+      console.log(' BALANCE UPGRADE credits adjustment:', {
         prevCredits,
         targetCredits,
         deltaCredits,
@@ -723,7 +717,7 @@ try {
       full_access: tier === 'pro' || tier === 'elite'
     };
 
-    // ✅ Extra (safe) for balance upgrade only: make user lifetime + all partners access
+    // Extra (safe) for balance upgrade only: make user lifetime + all partners access
     // This does NOT change old flows because it only runs when paymentType === 'balance_upgrade'
     if (paymentType === 'balance_upgrade') {
       userUpdate.access_mode = 'lifetime';
@@ -777,41 +771,40 @@ try {
       .from('credits_ledger')
       .insert(ledgerData);
 
-      // ✅ Send email for membership purchase / upgrade
-// ✅ Send email for membership purchase / upgrade
-try {
-  const userName = await getUserName(email);
+      // Send email for membership purchase / upgrade
+      try {
+        const userName = await getUserName(email);
 
-  await sendCreditActivityEmail({
-    email,
-    userName,
-    reason:
-      paymentType === "balance_upgrade"
-        ? `balance_upgrade_to_${tier}`
-        : `membership_${tier}`,
-    delta: deltaCredits,
-    newBalance: newTotalCredits,
-    amountUsd: usd,
-    originSite: "stripe_payment",
-    occurredAt: nowIso,
-    ledgerId: ledgerResult?.[0]?.id ?? null,
-    stripeEventId: sourceEventId,
-    stripeSessionId: sessionId,
-  });
-} catch (e) {
-  console.error("Payment email failed:", e?.message || e);
-}
+        await sendCreditActivityEmail({
+          email,
+          userName,
+          reason:
+            paymentType === "balance_upgrade"
+              ? `balance_upgrade_to_${tier}`
+              : `membership_${tier}`,
+          delta: deltaCredits,
+          newBalance: newTotalCredits,
+          amountUsd: usd,
+          originSite: "stripe_payment",
+          occurredAt: nowIso,
+          ledgerId: ledgerResult?.[0]?.id ?? null,
+          stripeEventId: sourceEventId,
+          stripeSessionId: sessionId,
+        });
+      } catch (e) {
+        console.error("Payment email failed:", e?.message || e);
+      }
 
 
 
     if (ledgerError) {
-      console.error('❌ CREDITS_LEDGER insert FAILED:', ledgerError);
+      console.error(' CREDITS_LEDGER insert FAILED:', ledgerError);
 
       if (ledgerError.code !== '23505') {
         throw ledgerError;
       }
 
-      console.log("ℹ️ Duplicate stripe_event_id ignored");
+      console.log(" Duplicate stripe_event_id ignored");
     }
 
     // ----- Referral code -----
@@ -830,7 +823,7 @@ try {
     };
 
   } catch (error) {
-    console.error('❌ Payment handling ERROR:', error);
+    console.error(' Payment handling ERROR:', error);
     return { success: false, error: error.message };
   }
 };
@@ -840,7 +833,6 @@ try {
 
 
 /* ----------------------------- Webhook --------------------------------- */
-/* ----------------------------- Webhook --------------------------------- */
 const handleWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -848,9 +840,9 @@ const handleWebhook = async (req, res) => {
   try {
     // Verify webhook signature
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    console.log('🔔 Webhook received:', event.type, 'Event ID:', event.id);
+    console.log(' Webhook received:', event.type, 'Event ID:', event.id);
   } catch (err) {
-    console.error('❌ Webhook verification failed:', err.message);
+    console.error(' Webhook verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -864,19 +856,19 @@ const handleWebhook = async (req, res) => {
 
   // Process the webhook asynchronously
   processWebhookEvent(event).catch(error => {
-    console.error('❌ Async webhook processing failed:', error);
+    console.error(' Async webhook processing failed:', error);
   });
 };
 
 /* --------------------------- Async Webhook Processor --------------------------- */
 const processWebhookEvent = async (event) => {
   try {
-    console.log('🔄 Processing webhook event asynchronously:', event.type, event.id);
+    console.log(' Processing webhook event asynchronously:', event.type, event.id);
 
     switch (event.type) {
       case 'checkout.session.completed':
         const session = event.data.object;
-        console.log('💰 Checkout session completed:', {
+        console.log(' Checkout session completed:', {
           session_id: session.id,
           payment_status: session.payment_status,
           tier: session.metadata?.membership_tier,
@@ -886,39 +878,39 @@ const processWebhookEvent = async (event) => {
         });
         
         if (session.payment_status === 'paid') {
-          console.log('🎯 Calling handleSuccessfulPayment for paid session...');
+          console.log('Calling handleSuccessfulPayment for paid session...');
           const result = await handleSuccessfulPayment(session, event.id);
-          console.log('📝 Payment processing completed with result:', result);
+          console.log(' Payment processing completed with result:', result);
           
           // Log specifically about ledger insertion
           if (result.ledgerInserted) {
-            console.log('✅ SUCCESS: Ledger record was inserted');
+            console.log('SUCCESS: Ledger record was inserted');
           } else {
-            console.log('❌ FAILED: Ledger record was NOT inserted');
-            console.log('🔍 Result details:', result);
+            console.log(' FAILED: Ledger record was NOT inserted');
+            console.log(' Result details:', result);
           }
         } else {
-          console.log(`ℹ️ Session ${session.id} not paid, status: ${session.payment_status}`);
+          console.log(` Session ${session.id} not paid, status: ${session.payment_status}`);
         }
         break;
         
       case 'checkout.session.expired':
-        console.log(`❌ Checkout session expired: ${event.data.object.id}`);
+        console.log(` Checkout session expired: ${event.data.object.id}`);
         break;
         
       case 'payment_intent.succeeded':
-        console.log('💳 Payment intent succeeded:', event.data.object.id);
+        console.log('Payment intent succeeded:', event.data.object.id);
         break;
         
       default:
-        console.log(`⚙️ Unhandled event type: ${event.type}`);
+        console.log(` Unhandled event type: ${event.type}`);
     }
 
-    console.log('✅ Webhook processing completed for event:', event.id);
+    console.log('Webhook processing completed for event:', event.id);
     
   } catch (err) {
-    console.error('❌ Webhook processor error:', err);
-    console.error('❌ Error details:', {
+    console.error(' Webhook processor error:', err);
+    console.error(' Error details:', {
       message: err.message,
       stack: err.stack,
       event_id: event.id
@@ -1026,7 +1018,6 @@ const healthCheck = async (req, res) => {
 };
 
 
-// Add these at the end of your stripeController.js file:
 
 /* --------------------------- Legacy/Placeholder Functions --------------------------- */
 const getSessionStatus = async (req, res) => {
@@ -1134,8 +1125,7 @@ const syncUserAccess = async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // This would typically sync user access across systems
-    // For now, just return current user data
+    
     const { data: user, error } = await supabase
       .from('users')
       .select('*')

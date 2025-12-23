@@ -302,10 +302,10 @@ const completeGate = async (req, res) => {
     if (!session_id && bodyEmail && origin) {
   console.log('[gate.complete] no session_id; awarding partner once/day for', bodyEmail, origin);
 
-  // ✅ award partner credits once per day
+  // award partner credits once per day
   await awardPartnerOncePerDay(bodyEmail, origin);
 
-  // ✅ always redirect to selected partner (or return_to)
+  // always redirect to selected partner (or return_to)
   const redirect_url = PARTNER_MAP[return_to || origin] || PARTNER_MAP[origin] || '/';
   return res.json({ success: true, redirect_url });
 }

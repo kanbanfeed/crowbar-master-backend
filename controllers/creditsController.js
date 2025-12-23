@@ -25,10 +25,10 @@ async function bumpUserCredits(email, deltaCredits) {
 
   if (selErr) {
   console.error('select user total_credits error:', selErr);
-  throw selErr; // ✅ stop here so you see the real issue
+  throw selErr; 
 }
 
-  // ✅ ADD THESE TWO LINES HERE (replace old newTotal line)
+  // ADD THESE TWO LINES HERE
   const safeDelta = Number(deltaCredits) || 0;
   const newTotal = (curr?.total_credits || 0) + safeDelta;
 

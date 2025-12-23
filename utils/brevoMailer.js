@@ -75,6 +75,7 @@ function buildCreditUpdateEmail({
       If you have questions, contact us at
       <a style="color:#059669;text-decoration:underline;" href="mailto:${supportEmail}">${supportEmail}</a>.
     </p>
+    <p style="color:#000;">VAT not applicable — Company not VAT registered. VAT may be charged if registration is triggered.</p>
   `;
 
   return { subject, html: emailLayout(subject, body) };

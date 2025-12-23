@@ -33,7 +33,7 @@ const logger = (req, res, next) => {
 app.use(logger);
 
 /* -----------------------------------------
-   ⚠️ STRIPE WEBHOOK RAW BODY (MUST COME BEFORE JSON)
+    STRIPE WEBHOOK RAW BODY (MUST COME BEFORE JSON)
 ------------------------------------------ */
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
@@ -86,8 +86,8 @@ app.use('*', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Crowbar Backend running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
-  console.log(`📍 Test route: http://localhost:${PORT}/test`);
-  console.log(`📍 Webhook: POST http://localhost:${PORT}/api/stripe/webhook`);
+  console.log(` Crowbar Backend running on port ${PORT}`);
+  console.log(` Health check: http://localhost:${PORT}/health`);
+  console.log(` Test route: http://localhost:${PORT}/test`);
+  console.log(` Webhook: POST http://localhost:${PORT}/api/stripe/webhook`);
 });

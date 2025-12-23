@@ -73,7 +73,7 @@ router.post('/user/update-profile', async (req, res) => {
     // Already rewarded?
     const alreadyRewarded = updatedUser.profile_completed === true;
 
-    // 🔍 DEBUG LOGGING
+    //  DEBUG LOGGING
     console.log('=== CREDIT REWARD DEBUG ===');
     console.log('User:', email);
     console.log('Profile Complete:', profileComplete, {
@@ -100,7 +100,7 @@ if (profileComplete && kycComplete && !alreadyRewarded) {
 
   const newCredits = (updatedUser.total_credits || 0) + 20;
 
-  // ✅ Correct primary key based on your DB structure
+  // Correct primary key based on your DB structure
   const userId = updatedUser.id;
   console.log("🆔 Using correct userId:", userId);
 
@@ -130,9 +130,9 @@ if (profileComplete && kycComplete && !alreadyRewarded) {
   });
 
 if (ledgerError) {
-  console.error("❌ FULL LEDGER INSERT ERROR:", JSON.stringify(ledgerError, null, 2));
+  console.error(" FULL LEDGER INSERT ERROR:", JSON.stringify(ledgerError, null, 2));
 } else {
-  console.log("✅ SUCCESS: Ledger record inserted");
+  console.log("SUCCESS: Ledger record inserted");
 }
 
     // 3️⃣ UPDATE credits table
@@ -144,9 +144,9 @@ if (ledgerError) {
       });
 
     if (balanceError) {
-      console.log("❌ FAILED updating credits table:", balanceError);
+      console.log(" FAILED updating credits table:", balanceError);
     } else {
-      console.log("✅ SUCCESS: Credits table updated");
+      console.log("SUCCESS: Credits table updated");
     }
   }
 }
