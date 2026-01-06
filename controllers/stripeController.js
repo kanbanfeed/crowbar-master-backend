@@ -201,14 +201,12 @@ const createCheckoutSession = async (req, res) => {
       return res.status(400).json({ error: 'Invalid partnerKey. Must be talentkonnect, careduel, or ecoworldbuy' });
     }
       const amt = Number(passAmount);
-      if (![7, 9, 12].includes(amt)) {
-        return res.status(400).json({ error: 'passAmount must be 7, 9, or 12' });
+      if (amt !== 7) {
+        return res.status(400).json({ error: 'Only $7 ACCESS PASS is allowed' });
       }
 
       const passPriceMap = {
-        7: process.env.STRIPE_PRICE_ACCESS_7,
-        9: process.env.STRIPE_PRICE_ACCESS_9,
-        12: process.env.STRIPE_PRICE_ACCESS_12,
+        7: process.env.STRIPE_PRICE_ACCESS_7
       };
 
       finalPriceId = passPriceMap[amt];
@@ -466,7 +464,9 @@ const handleSuccessfulPayment = async (session, sourceEventId = null) => {
       const paidAmount = Number(session?.metadata?.limited_paid_amount || 0);
 
       if (!partnerKey) return { success: false, error: 'Missing partner_key in metadata' };
-      if (![7, 9, 12].includes(paidAmount)) return { success: false, error: 'Invalid limited_paid_amount' };
+      if (paidAmount !== 7)
+      return { success: false, error: 'Invalid limited pass amount' };
+
 
       const nowIso = new Date().toISOString();
       await ensureUser(email);
