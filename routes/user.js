@@ -28,7 +28,7 @@ router.post('/user/update-profile', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email is required' });
     }
 
-    // 1️⃣ Update profile row
+    // 1️ Update profile row
     const { data: updatedUser, error: updateError } = await supabase
       .from('users')
       .update({
@@ -54,9 +54,9 @@ router.post('/user/update-profile', async (req, res) => {
     if (!updatedUser) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
-    console.log("🟦 FULL UPDATED USER ROW:", updatedUser);
+    console.log("FULL UPDATED USER ROW:", updatedUser);
 
-    // 2️⃣ CHECK required fields for reward - ADD DEBUG LOGGING
+    // 2 CHECK required fields for reward - ADD DEBUG LOGGING
     const profileComplete =
       updatedUser.full_name &&
       updatedUser.phone &&
@@ -92,19 +92,17 @@ router.post('/user/update-profile', async (req, res) => {
     console.log('Already Rewarded:', alreadyRewarded);
     console.log('Should Reward:', profileComplete && kycComplete && !alreadyRewarded);
 
-    // 3️⃣ REWARD 20 CREDITS
- /* ---------------- CREDIT REWARD PROCESSOR ---------------- */
 /* ---------------- CREDIT REWARD PROCESSOR ---------------- */
 if (profileComplete && kycComplete && !alreadyRewarded) {
-  console.log('🎉 AWARDING 20 CREDITS TO:', email);
+  console.log('AWARDING 20 CREDITS TO:', email);
 
   const newCredits = (updatedUser.total_credits || 0) + 20;
 
   // Correct primary key based on your DB structure
   const userId = updatedUser.id;
-  console.log("🆔 Using correct userId:", userId);
+  console.log(" Using correct userId:", userId);
 
-  // 1️⃣ Update users table
+  // 1️ Update users table
   const { error: creditError } = await supabase
     .from('users')
     .update({
@@ -118,24 +116,27 @@ if (profileComplete && kycComplete && !alreadyRewarded) {
     console.error('Credit update error:', creditError);
   } else {
 
-    // 2️⃣ INSERT into credits_ledger
+    // 2️ INSERT into credits_ledger
     const { error: ledgerError } = await supabase
   .from('credits_ledger')
-  .insert({
-    email: updatedUser.email,              // REQUIRED FIELD
+  .insert([{
+    user_id: userId,                      
+    email: updatedUser.email,             
     delta: 20,
     reason: 'reward',
     origin_site: 'Profile + KYC bonus',
-    reward_day: new Date().toISOString().slice(0, 10)
-  });
+    reward_day: new Date().toISOString().split('T')[0],
+    created_at: new Date().toISOString()   
+  }])
+  .select(); 
 
 if (ledgerError) {
-  console.error(" FULL LEDGER INSERT ERROR:", JSON.stringify(ledgerError, null, 2));
+  console.error("LEDGER INSERT ERROR:", ledgerError);
 } else {
-  console.log("SUCCESS: Ledger record inserted");
+  console.log("LEDGER INSERT SUCCESS:", ledgerData);
 }
 
-    // 3️⃣ UPDATE credits table
+    // 3 UPDATE credits table
     const { error: balanceError } = await supabase
       .from('credits')
       .upsert({
